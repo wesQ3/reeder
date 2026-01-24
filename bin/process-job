@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""
+Reeder Job Processor
+
+Processes TTS jobs from the inbox directory:
+1. Picks the oldest job file
+2. Moves it to processing/
+3. Extracts text (for URL jobs) or uses provided text
+4. Generates audio with pocket-tts
+5. Converts to final format (opus/mp3)
+6. Updates RSS feed
+7. Moves completed job to done/
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+# Status file for remote monitoring
+STATUS_FILE = None
+
+
+def load_config(config_path: Path | None = None) -> dict:
+    """Load configuration from config.toml."""
+    if config_path is None:
+        # Look for config in standard locations
+        candidates = [
+            Path(__file__).parent.parent / "config.toml",
+            Path("/etc/reeder/config.toml"),
+            Path.home() / ".config/reeder/config.toml",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                config_path = candidate
+                break
+        else:
+            raise FileNotFoundError("No config.toml found")
+
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
+
+def get_paths(config: dict) -> dict[str, Path]:
+    """Resolve all paths from config."""
+    base = Path(config["paths"]["base_dir"])
+    return {
+        "base": base,
+        "inbox": base / config["paths"]["inbox"],
+        "processing": base / config["paths"]["processing"],
+        "done": base / config["paths"]["done"],
+        "audio": base / config["paths"]["audio"],
+        "www": base / config["paths"]["www"],
+        "voices": base / config["paths"]["voices"],
+        "status": base / config["paths"]["status_file"],
+    }
+
+
+def write_status(paths: dict, message: str):
+    """Write status message to status file."""
+    status_path = paths["status"]
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with open(status_path, "w") as f:
+        f.write(f"{timestamp}\n{message}\n")
+    print(f"[STATUS] {message}")
+
+
+def get_oldest_job(inbox: Path) -> Path | None:
+    """Get the oldest job file from inbox (by filename, which includes timestamp)."""
+    jobs = sorted(inbox.glob("*.json"))
+    return jobs[0] if jobs else None
+
+
+def extract_text_trafilatura(url: str) -> str:
+    """Extract article text using trafilatura."""
+    import trafilatura
+
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        raise ValueError(f"Failed to fetch URL: {url}")
+
+    text = trafilatura.extract(
+        downloaded,
+        include_comments=False,
+        include_tables=False,
+    )
+    if not text:
+        raise ValueError(f"Failed to extract text from: {url}")
+
+    return text
+
+
+def extract_text_pup(url: str, selector: str) -> str:
+    """Extract text using curl + pup with a CSS selector."""
+    result = subprocess.run(
+        ["curl", "-sL", url],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    html = result.stdout
+
+    result = subprocess.run(
+        ["pup", selector],
+        input=html,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    text = result.stdout.strip()
+
+    if not text:
+        raise ValueError(f"No text found with selector '{selector}' at {url}")
+
+    return text
+
+
+def extract_text_readability(url: str) -> str:
+    """Extract text using readability-cli."""
+    result = subprocess.run(
+        ["readable", url, "-p"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    text = result.stdout.strip()
+
+    if not text:
+        raise ValueError(f"Failed to extract text with readability from: {url}")
+
+    return text
+
+
+def extract_text(job: dict, config: dict) -> str:
+    """Extract text based on job type and extractor settings."""
+    if job["type"] == "text":
+        return job["text"]
+
+    url = job["url"]
+    extractor = job.get("extractor", config["extractors"]["default"])
+
+    # Check for site-specific extractor
+    if extractor == "auto":
+        domain = urlparse(url).netloc
+        site_extractors = config.get("extractors", {}).get("sites", {})
+        if domain in site_extractors:
+            extractor = {"pup": site_extractors[domain]}
+        else:
+            extractor = "trafilatura"
+
+    if isinstance(extractor, dict) and "pup" in extractor:
+        return extract_text_pup(url, extractor["pup"])
+    elif extractor == "readability":
+        return extract_text_readability(url)
+    else:  # trafilatura (default)
+        return extract_text_trafilatura(url)
+
+
+def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths: dict):
+    """Generate audio using pocket-tts."""
+    voice = job.get("voice", "default")
+    if voice == "default":
+        voice_path = paths["voices"] / config["tts"]["default_voice"]
+    elif not Path(voice).is_absolute():
+        voice_path = paths["voices"] / voice
+    else:
+        voice_path = Path(voice)
+
+    temperature = job.get("temperature", config["tts"]["temperature"])
+    device = config["tts"].get("device", "cpu")
+
+    # Generate WAV with pocket-tts
+    cmd = [
+        "uvx", "pocket-tts", "generate",
+        "--text", text,
+        "--voice", str(voice_path),
+        "--temperature", str(temperature),
+        "--device", device,
+        "--output-path", str(output_path),
+        "--quiet",
+    ]
+
+    subprocess.run(cmd, check=True)
+
+
+def convert_audio(wav_path: Path, output_path: Path, config: dict) -> int:
+    """Convert WAV to final format. Returns duration in seconds."""
+    audio_format = config["tts"].get("audio_format", "opus")
+
+    if audio_format == "opus":
+        bitrate = config["tts"].get("opus_bitrate", 48)
+        cmd = [
+            "ffmpeg", "-y", "-i", str(wav_path),
+            "-c:a", "libopus", "-b:a", f"{bitrate}k",
+            str(output_path),
+        ]
+    else:  # mp3
+        bitrate = config["tts"].get("mp3_bitrate", 64)
+        cmd = [
+            "ffmpeg", "-y", "-i", str(wav_path),
+            "-c:a", "libmp3lame", "-b:a", f"{bitrate}k",
+            str(output_path),
+        ]
+
+    subprocess.run(cmd, capture_output=True, check=True)
+
+    # Get duration using ffprobe
+    probe_cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(output_path),
+    ]
+    result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+    duration = int(float(result.stdout.strip()))
+
+    return duration
+
+
+def process_job(job_path: Path, config: dict, paths: dict):
+    """Process a single job file."""
+    job_name = job_path.stem
+    write_status(paths, f"Processing: {job_name}")
+
+    # Load job
+    with open(job_path) as f:
+        job = json.load(f)
+
+    # Move to processing
+    processing_path = paths["processing"] / job_path.name
+    shutil.move(job_path, processing_path)
+
+    try:
+        # Extract text
+        write_status(paths, f"Extracting text: {job_name}")
+        text = extract_text(job, config)
+        print(f"  Extracted {len(text)} characters")
+
+        # Determine output format
+        audio_format = config["tts"].get("audio_format", "opus")
+        audio_ext = "opus" if audio_format == "opus" else "mp3"
+        audio_filename = f"{job_name}.{audio_ext}"
+        audio_output = paths["audio"] / audio_filename
+
+        # Generate TTS audio
+        write_status(paths, f"Generating audio: {job_name}")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = Path(tmpdir) / "output.wav"
+            generate_audio(text, wav_path, job, config, paths)
+
+            # Convert to final format
+            write_status(paths, f"Converting audio: {job_name}")
+            duration = convert_audio(wav_path, audio_output, config)
+
+        # Add completion metadata to job
+        job["_completed"] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "audio_file": audio_filename,
+            "audio_size": audio_output.stat().st_size,
+            "duration_seconds": duration,
+            "guid": job_name,
+        }
+
+        # Ensure title exists
+        if "title" not in job:
+            if job["type"] == "url":
+                job["title"] = job["url"]
+            else:
+                job["title"] = "Untitled"
+
+        # Move to done
+        done_path = paths["done"] / job_path.name
+        with open(done_path, "w") as f:
+            json.dump(job, f, indent=2)
+        processing_path.unlink()
+
+        # Update RSS feed
+        write_status(paths, f"Updating feed: {job_name}")
+        update_feed_script = Path(__file__).parent / "update-feed"
+        subprocess.run([str(update_feed_script)], check=True)
+
+        write_status(paths, f"Completed: {job_name}")
+
+    except Exception as e:
+        # Move to failed state (back to done with error)
+        job["_error"] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": str(e),
+        }
+        failed_path = paths["done"] / f"FAILED-{job_path.name}"
+        with open(failed_path, "w") as f:
+            json.dump(job, f, indent=2)
+        processing_path.unlink()
+        write_status(paths, f"FAILED: {job_name} - {e}")
+        raise
+
+
+def main():
+    """Main entry point."""
+    # Load config
+    config_path = os.environ.get("REEDER_CONFIG")
+    config = load_config(Path(config_path) if config_path else None)
+    paths = get_paths(config)
+
+    # Ensure directories exist
+    for name, path in paths.items():
+        if name != "status":
+            path.mkdir(parents=True, exist_ok=True)
+
+    # Check for job
+    job_path = get_oldest_job(paths["inbox"])
+    if not job_path:
+        write_status(paths, "Idle - no jobs in queue")
+        return
+
+    # Process job
+    process_job(job_path, config, paths)
+
+    # Check if there are more jobs
+    next_job = get_oldest_job(paths["inbox"])
+    if next_job:
+        remaining = len(list(paths["inbox"].glob("*.json")))
+        write_status(paths, f"Idle - {remaining} job(s) remaining")
+
+
+if __name__ == "__main__":
+    main()

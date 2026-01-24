@@ -1,0 +1,12 @@
+# Reeder development environment
+inbox/
+processing/
+done/
+www/audio/
+var/
+voices/*.wav
+*.opus
+*.mp3
+*.wav
+__pycache__/
+.venv/

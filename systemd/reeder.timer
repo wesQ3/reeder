@@ -1,0 +1,14 @@
+[Unit]
+Description=Reeder TTS job processor timer (fallback)
+Documentation=https://github.com/yourname/reeder
+
+[Timer]
+# Run every 5 minutes as a fallback in case path watcher misses something
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+# Add some randomness to prevent thundering herd
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

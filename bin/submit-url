@@ -1,0 +1,38 @@
+#!/bin/bash
+# Submit a URL job to Reeder
+# Usage: submit-url <URL> [title]
+
+set -euo pipefail
+
+INBOX="${REEDER_INBOX:-/var/lib/reeder/inbox}"
+URL="${1:-}"
+TITLE="${2:-}"
+
+if [[ -z "$URL" ]]; then
+    echo "Usage: $0 <URL> [title]"
+    exit 1
+fi
+
+TIMESTAMP=$(date +%s)
+SLUG=$(echo "$URL" | sed 's|https\?://||; s|[^a-zA-Z0-9]|-|g' | cut -c1-50)
+FILENAME="${TIMESTAMP}-${SLUG}.json"
+
+JOB=$(cat <<EOF
+{
+  "type": "url",
+  "url": "$URL"
+EOF
+)
+
+if [[ -n "$TITLE" ]]; then
+    JOB=$(echo "$JOB" | sed 's/}$/,/')
+    JOB="$JOB
+  \"title\": \"$TITLE\"
+}"
+else
+    JOB="$JOB
+}"
+fi
+
+echo "$JOB" > "${INBOX}/${FILENAME}"
+echo "Submitted: ${FILENAME}"

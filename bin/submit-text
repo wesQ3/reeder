@@ -1,0 +1,37 @@
+#!/bin/bash
+# Submit text directly to Reeder
+# Usage: submit-text <title> [text or - for stdin]
+
+set -euo pipefail
+
+INBOX="${REEDER_INBOX:-/var/lib/reeder/inbox}"
+TITLE="${1:-Untitled}"
+TEXT="${2:-}"
+
+if [[ "$TEXT" == "-" ]] || [[ -z "$TEXT" ]]; then
+    TEXT=$(cat)
+fi
+
+if [[ -z "$TEXT" ]]; then
+    echo "Usage: $0 <title> <text>"
+    echo "       $0 <title> -  # read from stdin"
+    echo "       echo 'text' | $0 <title>"
+    exit 1
+fi
+
+TIMESTAMP=$(date +%s)
+SLUG=$(echo "$TITLE" | sed 's|[^a-zA-Z0-9]|-|g' | cut -c1-50)
+FILENAME="${TIMESTAMP}-${SLUG}.json"
+
+# Escape text for JSON
+TEXT_ESCAPED=$(echo "$TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+cat > "${INBOX}/${FILENAME}" <<EOF
+{
+  "type": "text",
+  "title": "$TITLE",
+  "text": $TEXT_ESCAPED
+}
+EOF
+
+echo "Submitted: ${FILENAME}"

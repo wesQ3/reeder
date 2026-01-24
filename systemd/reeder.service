@@ -1,0 +1,46 @@
+[Unit]
+Description=Process Reeder TTS jobs
+Documentation=https://github.com/yourname/reeder
+# Only start via path trigger, not on boot
+RefuseManualStart=no
+After=network.target
+
+[Service]
+Type=oneshot
+
+# Run the job processor
+ExecStart=/var/lib/reeder/bin/process-job
+
+# Environment
+Environment="REEDER_CONFIG=/var/lib/reeder/config.toml"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+# Working directory
+WorkingDirectory=/var/lib/reeder
+
+# Run as dedicated user (create with install.sh)
+User=reeder
+Group=reeder
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/reeder
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reeder
+
+# Don't restart automatically - path unit will trigger again if more jobs exist
+Restart=no
+
+[Install]
+# Not needed - started by path unit
+WantedBy=multi-user.target

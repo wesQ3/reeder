@@ -1,0 +1,50 @@
+# Reeder Caddyfile
+# Serves audio files and RSS feed over HTTPS
+#
+# For Tailscale, get a certificate with:
+#   tailscale cert your-hostname.tail1234.ts.net
+#
+# Then update the hostname below and copy certs:
+#   sudo mkdir -p /etc/caddy/certs
+#   sudo cp your-hostname.* /etc/caddy/certs/
+
+# Replace with your Tailscale hostname
+your-hostname.tail1234.ts.net {
+    # Use Tailscale-provided certificates
+    tls /etc/caddy/certs/your-hostname.tail1234.ts.net.crt /etc/caddy/certs/your-hostname.tail1234.ts.net.key
+
+    # Serve static files from www directory
+    root * /var/lib/reeder/www
+
+    # Enable file server
+    file_server
+
+    # Set proper MIME types
+    @rss path /feed.xml
+    header @rss Content-Type application/rss+xml
+
+    @opus path *.opus
+    header @opus Content-Type audio/opus
+
+    # Enable compression for feed
+    encode gzip
+
+    # Logging
+    log {
+        output file /var/log/caddy/reeder.log
+        format console
+    }
+}
+
+# Alternative: Simple HTTP-only config for local/Tailscale use
+# (Tailscale's MagicDNS provides secure transport)
+#
+# :8080 {
+#     root * /var/lib/reeder/www
+#     file_server
+#     
+#     @rss path /feed.xml
+#     header @rss Content-Type application/rss+xml
+#     
+#     encode gzip
+# }

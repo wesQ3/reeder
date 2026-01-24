@@ -1,0 +1,73 @@
+#!/bin/bash
+# Show Reeder queue status
+# Usage: reeder-status
+
+set -euo pipefail
+
+REEDER_DIR="${REEDER_DIR:-/var/lib/reeder}"
+
+echo "=== Reeder Status ==="
+echo ""
+
+# Current status
+if [[ -f "$REEDER_DIR/var/status.txt" ]]; then
+    echo "Current: $(tail -1 "$REEDER_DIR/var/status.txt")"
+    echo "Updated: $(head -1 "$REEDER_DIR/var/status.txt")"
+else
+    echo "Current: Unknown (no status file)"
+fi
+echo ""
+
+# Queue counts
+INBOX_COUNT=$(find "$REEDER_DIR/inbox" -name "*.json" 2>/dev/null | wc -l)
+PROCESSING_COUNT=$(find "$REEDER_DIR/processing" -name "*.json" 2>/dev/null | wc -l)
+DONE_COUNT=$(find "$REEDER_DIR/done" -name "*.json" ! -name "FAILED-*" 2>/dev/null | wc -l)
+FAILED_COUNT=$(find "$REEDER_DIR/done" -name "FAILED-*.json" 2>/dev/null | wc -l)
+
+echo "Queue:"
+echo "  Inbox:      $INBOX_COUNT"
+echo "  Processing: $PROCESSING_COUNT"
+echo "  Completed:  $DONE_COUNT"
+echo "  Failed:     $FAILED_COUNT"
+echo ""
+
+# Show inbox contents
+if [[ $INBOX_COUNT -gt 0 ]]; then
+    echo "Pending jobs:"
+    for job in "$REEDER_DIR/inbox"/*.json; do
+        if [[ -f "$job" ]]; then
+            title=$(python3 -c "import json; print(json.load(open('$job')).get('title', json.load(open('$job')).get('url', 'Untitled'))[:60])" 2>/dev/null || basename "$job")
+            echo "  - $(basename "$job"): $title"
+        fi
+    done
+    echo ""
+fi
+
+# Show recent completions
+if [[ $DONE_COUNT -gt 0 ]]; then
+    echo "Recent completions (last 5):"
+    for job in $(ls -t "$REEDER_DIR/done"/*.json 2>/dev/null | grep -v "FAILED-" | head -5); do
+        if [[ -f "$job" ]]; then
+            title=$(python3 -c "import json; print(json.load(open('$job')).get('title', 'Untitled')[:50])" 2>/dev/null || basename "$job")
+            echo "  - $title"
+        fi
+    done
+    echo ""
+fi
+
+# Show failed jobs
+if [[ $FAILED_COUNT -gt 0 ]]; then
+    echo "Failed jobs:"
+    for job in "$REEDER_DIR/done"/FAILED-*.json; do
+        if [[ -f "$job" ]]; then
+            error=$(python3 -c "import json; print(json.load(open('$job')).get('_error', {}).get('message', 'Unknown error')[:60])" 2>/dev/null || echo "Unknown error")
+            echo "  - $(basename "$job"): $error"
+        fi
+    done
+    echo ""
+fi
+
+# Systemd service status
+echo "Systemd:"
+systemctl is-active reeder.path &>/dev/null && echo "  reeder.path: active" || echo "  reeder.path: inactive"
+systemctl is-active reeder.service &>/dev/null && echo "  reeder.service: running" || echo "  reeder.service: idle"

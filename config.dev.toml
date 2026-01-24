@@ -1,0 +1,37 @@
+# Development config - paths relative to repo root
+# Copy to config.toml and adjust for production
+
+[paths]
+# For development, use current directory
+base_dir = "."
+
+inbox = "inbox"
+processing = "processing"
+done = "done"
+audio = "www/audio"
+www = "www"
+voices = "voices"
+status_file = "var/status.txt"
+
+[tts]
+default_voice = "default.wav"
+temperature = 0.8
+device = "cpu"
+audio_format = "opus"
+opus_bitrate = 48
+mp3_bitrate = 64
+
+[feed]
+title = "Reeder (Dev)"
+description = "Articles converted to audio"
+author = "Reeder TTS"
+language = "en-us"
+base_url = "http://localhost:8080"
+image = "cover.jpg"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[extractors]
+default = "trafilatura"

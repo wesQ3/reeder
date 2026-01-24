@@ -1,0 +1,63 @@
+# Reeder Configuration
+
+[paths]
+# Base directory for reeder data (absolute path)
+base_dir = "/var/lib/reeder"
+
+# Subdirectories (relative to base_dir)
+inbox = "inbox"
+processing = "processing"
+done = "done"
+audio = "www/audio"
+www = "www"
+voices = "voices"
+status_file = "var/status.txt"
+
+[tts]
+# Default voice file (relative to voices dir, or absolute path)
+default_voice = "default.wav"
+
+# Default TTS parameters
+temperature = 0.8
+device = "cpu"
+
+# Output format: "opus" or "mp3"
+# opus = smaller files, modern format
+# mp3 = maximum compatibility with podcast apps
+audio_format = "opus"
+
+# Opus encoding bitrate (kbps)
+opus_bitrate = 48
+
+# MP3 encoding bitrate (kbps) 
+mp3_bitrate = 64
+
+[feed]
+# RSS feed metadata
+title = "Reeder"
+description = "Articles converted to audio"
+author = "Reeder TTS"
+language = "en-us"
+
+# Base URL for audio files and feed (your Tailscale hostname)
+# Example: "https://myserver.tail1234.ts.net/reeder"
+base_url = "http://localhost:8080"
+
+# Feed image (1400x1400 to 3000x3000 recommended for podcast apps)
+# Place in www/ directory
+image = "cover.jpg"
+
+[server]
+# Static file server settings (if using built-in server)
+host = "0.0.0.0"
+port = 8080
+
+[extractors]
+# Default extractor for URL jobs
+default = "trafilatura"
+
+# Site-specific extractors (domain -> pup selector)
+# Uncomment and customize for sites you frequently read
+# [extractors.sites]
+# "news.ycombinator.com" = "td.title a"
+# "example.com" = "article .content p text{}"
