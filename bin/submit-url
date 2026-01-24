@@ -4,7 +4,38 @@
 
 set -euo pipefail
 
-INBOX="${REEDER_INBOX:-/var/lib/reeder/inbox}"
+# Resolve inbox path from config
+get_inbox() {
+    local config="${REEDER_CONFIG:-}"
+    if [[ -z "$config" ]]; then
+        # Search standard locations
+        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        for candidate in "$script_dir/../config.toml" "/etc/reeder/config.toml" "$HOME/.config/reeder/config.toml"; do
+            if [[ -f "$candidate" ]]; then
+                config="$candidate"
+                break
+            fi
+        done
+    fi
+    
+    if [[ -z "$config" ]] || [[ ! -f "$config" ]]; then
+        echo "/var/lib/reeder/inbox"  # fallback
+        return
+    fi
+    
+    # Parse TOML with Python
+    python3 -c "
+import tomllib
+from pathlib import Path
+with open('$config', 'rb') as f:
+    cfg = tomllib.load(f)
+base = Path(cfg['paths']['base_dir'])
+inbox = base / cfg['paths']['inbox']
+print(inbox)
+"
+}
+
+INBOX="${REEDER_INBOX:-$(get_inbox)}"
 URL="${1:-}"
 TITLE="${2:-}"
 
@@ -17,22 +48,14 @@ TIMESTAMP=$(date +%s)
 SLUG=$(echo "$URL" | sed 's|https\?://||; s|[^a-zA-Z0-9]|-|g' | cut -c1-50)
 FILENAME="${TIMESTAMP}-${SLUG}.json"
 
-JOB=$(cat <<EOF
-{
-  "type": "url",
-  "url": "$URL"
-EOF
-)
+# Generate proper JSON with Python
+python3 -c "
+import json
+job = {'type': 'url', 'url': '''$URL'''}
+title = '''$TITLE'''
+if title:
+    job['title'] = title
+print(json.dumps(job, indent=2))
+" > "${INBOX}/${FILENAME}"
 
-if [[ -n "$TITLE" ]]; then
-    JOB=$(echo "$JOB" | sed 's/}$/,/')
-    JOB="$JOB
-  \"title\": \"$TITLE\"
-}"
-else
-    JOB="$JOB
-}"
-fi
-
-echo "$JOB" > "${INBOX}/${FILENAME}"
 echo "Submitted: ${FILENAME}"

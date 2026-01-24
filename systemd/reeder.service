@@ -8,12 +8,13 @@ After=network.target
 [Service]
 Type=oneshot
 
-# Run the job processor
-ExecStart=/var/lib/reeder/bin/process-job
+# Run the job processor via uv (manages Python dependencies)
+ExecStart=/usr/local/bin/uv run --project /var/lib/reeder /var/lib/reeder/bin/process-job
 
 # Environment
 Environment="REEDER_CONFIG=/var/lib/reeder/config.toml"
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/usr/local/bin:/home/reeder/.local/bin:/usr/bin:/bin"
+Environment="UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv"
 
 # Working directory
 WorkingDirectory=/var/lib/reeder

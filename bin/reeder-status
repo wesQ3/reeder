@@ -4,7 +4,36 @@
 
 set -euo pipefail
 
-REEDER_DIR="${REEDER_DIR:-/var/lib/reeder}"
+# Resolve base dir from config
+get_base_dir() {
+    local config="${REEDER_CONFIG:-}"
+    if [[ -z "$config" ]]; then
+        # Search standard locations
+        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        for candidate in "$script_dir/../config.toml" "/etc/reeder/config.toml" "$HOME/.config/reeder/config.toml"; do
+            if [[ -f "$candidate" ]]; then
+                config="$candidate"
+                break
+            fi
+        done
+    fi
+    
+    if [[ -z "$config" ]] || [[ ! -f "$config" ]]; then
+        echo "/var/lib/reeder"  # fallback
+        return
+    fi
+    
+    # Parse TOML with Python
+    python3 -c "
+import tomllib
+from pathlib import Path
+with open('$config', 'rb') as f:
+    cfg = tomllib.load(f)
+print(cfg['paths']['base_dir'])
+"
+}
+
+REEDER_DIR="${REEDER_DIR:-$(get_base_dir)}"
 
 echo "=== Reeder Status ==="
 echo ""

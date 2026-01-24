@@ -22,7 +22,7 @@ www/feed.xml     → RSS podcast feed
 ./install.sh
 
 # Configure (edit base_url and voice settings)
-sudo nano /var/lib/reeder/config.toml
+sudo vim /var/lib/reeder/config.toml
 
 # Add a voice file
 sudo cp your-voice.wav /var/lib/reeder/voices/default.wav
@@ -104,26 +104,30 @@ Subscribe to `https://your-hostname/feed.xml` in any podcast app:
 ## Development
 
 ```bash
+# Install dependencies
+uv sync
+
 # Run locally (from repo directory)
-export REEDER_CONFIG=$PWD/config.toml
+export REEDER_CONFIG=config.dev.toml
 
-# Create local directories
-mkdir -p inbox processing done www/audio voices var
-
-# Process a job manually
-./bin/process-job
+# Submit and process a job
+bin/submit-url https://example.com/article "Test Article"
+uv run bin/process-job
 
 # Update feed manually
-./bin/update-feed
+uv run bin/update-feed
+
+# Check status
+bin/reeder-status
 ```
 
 ## Requirements
 
 - Python 3.11+
+- uv (Python package manager)
 - ffmpeg
 - curl
 - pup (for custom CSS selectors)
-- uv (Python package manager)
 - Caddy (optional, for HTTPS)
 
 ## License

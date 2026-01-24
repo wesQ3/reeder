@@ -71,11 +71,16 @@ if ! command -v uv &> /dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Install Python dependencies via uv
+# Install uv globally for systemd to use
+if [[ ! -f /usr/local/bin/uv ]]; then
+    sudo cp "$HOME/.local/bin/uv" /usr/local/bin/uv
+    sudo chmod +x /usr/local/bin/uv
+fi
+
+# Install pocket-tts as a uv tool (for CLI access)
 echo ""
-echo "=== Installing Python dependencies ==="
+echo "=== Installing pocket-tts ==="
 uv tool install pocket-tts || uv tool upgrade pocket-tts
-uv pip install --system trafilatura || pip install --user trafilatura
 
 # Create reeder user if it doesn't exist
 echo ""
@@ -93,7 +98,13 @@ echo "=== Creating directory structure ==="
 sudo mkdir -p "$INSTALL_DIR"/{inbox,processing,done,www/audio,voices,var,bin}
 sudo cp "$SCRIPT_DIR/bin/process-job" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/update-feed" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/bin/submit-url" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/bin/submit-text" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/bin/reeder-status" "$INSTALL_DIR/bin/"
 sudo chmod +x "$INSTALL_DIR/bin/"*
+
+# Copy pyproject.toml for uv
+sudo cp "$SCRIPT_DIR/pyproject.toml" "$INSTALL_DIR/pyproject.toml"
 
 # Copy config if not exists
 if [[ ! -f "$INSTALL_DIR/config.toml" ]]; then
@@ -105,6 +116,13 @@ fi
 
 # Set ownership
 sudo chown -R reeder:reeder "$INSTALL_DIR"
+
+# Install Python dependencies with uv
+echo ""
+echo "=== Installing Python dependencies ==="
+cd "$INSTALL_DIR"
+sudo -u reeder /usr/local/bin/uv sync
+echo "Python dependencies installed to $INSTALL_DIR/.venv"
 
 # Copy systemd units
 echo ""

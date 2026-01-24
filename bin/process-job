@@ -284,7 +284,7 @@ def process_job(job_path: Path, config: dict, paths: dict):
         # Update RSS feed
         write_status(paths, f"Updating feed: {job_name}")
         update_feed_script = Path(__file__).parent / "update-feed"
-        subprocess.run([str(update_feed_script)], check=True)
+        subprocess.run([sys.executable, str(update_feed_script)], check=True)
 
         write_status(paths, f"Completed: {job_name}")
 
