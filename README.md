@@ -28,6 +28,10 @@ sudo vim /var/lib/reeder/config.toml
 sudo cp your-voice.wav /var/lib/reeder/voices/default.wav
 sudo chown reeder:reeder /var/lib/reeder/voices/default.wav
 
+# Convert to safetensors for faster loading (recommended)
+# Note: Uses GitHub version for safetensors support
+sudo -u reeder uvx --from git+https://github.com/kyutai-labs/pocket-tts.git pocket-tts export-voice /var/lib/reeder/voices/default.wav /var/lib/reeder/voices/default.safetensors --truncate
+
 # Submit a test job
 echo '{"type":"text","text":"Hello world","title":"Test"}' | \
   sudo -u reeder tee /var/lib/reeder/inbox/$(date +%s)-test.json

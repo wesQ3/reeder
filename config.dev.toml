@@ -14,7 +14,7 @@ voices = "voices"
 status_file = "var/status.txt"
 
 [tts]
-default_voice = "default.wav"
+default_voice = "default.safetensors"
 temperature = 0.8
 device = "cpu"
 audio_format = "opus"

@@ -188,9 +188,10 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     temperature = job.get("temperature", config["tts"]["temperature"])
     device = config["tts"].get("device", "cpu")
 
-    # Generate WAV with pocket-tts
+    # Generate WAV with pocket-tts (use GitHub version for safetensors support)
     cmd = [
-        "uvx", "pocket-tts", "generate",
+        "uvx", "--from", "git+https://github.com/kyutai-labs/pocket-tts.git",
+        "pocket-tts", "generate",
         "--text", text,
         "--voice", str(voice_path),
         "--temperature", str(temperature),

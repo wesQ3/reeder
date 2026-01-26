@@ -5,6 +5,7 @@ done/
 www/audio/
 var/
 voices/*.wav
+voices/*.safetensors
 *.opus
 *.mp3
 *.wav
