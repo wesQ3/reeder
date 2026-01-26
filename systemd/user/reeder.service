@@ -1,0 +1,28 @@
+[Unit]
+Description=Process Reeder TTS jobs (dev)
+Documentation=https://github.com/yourname/reeder
+After=network.target
+
+[Service]
+Type=oneshot
+
+# Run the job processor via uv
+ExecStart=%h/.local/bin/uv run --project %h/code/reeder %h/code/reeder/bin/process-job
+
+# Environment
+Environment="REEDER_CONFIG=%h/code/reeder/config.dev.toml"
+Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Working directory
+WorkingDirectory=%h/code/reeder
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reeder-dev
+
+# Don't restart automatically - path unit will trigger again if more jobs exist
+Restart=no
+
+[Install]
+WantedBy=default.target

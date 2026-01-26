@@ -1,0 +1,23 @@
+[project]
+name = "reeder"
+version = "0.1.0"
+description = "Personal TTS RSS service"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "trafilatura>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+]
+
+[project.scripts]
+reeder-process = "bin.process_job:main"
+reeder-feed = "bin.update_feed:main"
+
+[tool.uv]
+dev-dependencies = [
+    "ruff",
+]

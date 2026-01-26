@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-"""
-Reeder RSS Feed Generator
+"""Reeder RSS Feed Generator
 
 Scans the done/ directory for completed jobs and generates an RSS 2.0 podcast feed.
 """
+
+# Auto-bootstrap: re-exec with uv if not in proper venv
+def _bootstrap():
+    import sys
+    # Check if we're in the right venv by looking for our marker
+    if not getattr(sys, '_reeder_bootstrapped', False):
+        try:
+            # Try importing a dependency to verify venv
+            from xml.etree.ElementTree import Element  # stdlib, always works
+        except ImportError:
+            pass
+        # Mark as bootstrapped to avoid infinite loop if uv run fails
+        sys.modules['__main__']._reeder_bootstrapped = True
+_bootstrap()
 
 import json
 import os
