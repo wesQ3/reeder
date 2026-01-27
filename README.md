@@ -2,6 +2,8 @@
 
 A personal TTS RSS service that converts articles and text to audio, served as a podcast feed.
 
+> **Be advised:** Cobbled together by various LLMs. Claude, take the wheel!
+
 ## Overview
 
 ```
@@ -136,4 +138,4 @@ bin/reeder-status
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) file for details.
