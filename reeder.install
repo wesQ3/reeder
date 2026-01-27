@@ -1,0 +1,71 @@
+# Arch Linux package install script for reeder
+
+post_install() {
+    # Create reeder system user
+    if ! getent passwd reeder >/dev/null; then
+        useradd --system --user-group --home-dir /var/lib/reeder --shell /usr/bin/nologin reeder
+        echo "Created system user 'reeder'"
+    fi
+    
+    # Create data directories
+    install -dm750 -o reeder -g reeder /var/lib/reeder
+    install -dm750 -o reeder -g reeder /var/lib/reeder/inbox
+    install -dm750 -o reeder -g reeder /var/lib/reeder/processing
+    install -dm750 -o reeder -g reeder /var/lib/reeder/done
+    install -dm755 -o reeder -g reeder /var/lib/reeder/www
+    install -dm755 -o reeder -g reeder /var/lib/reeder/www/audio
+    install -dm750 -o reeder -g reeder /var/lib/reeder/voices
+    install -dm750 -o reeder -g reeder /var/lib/reeder/var
+    
+    # Symlink config to data dir
+    ln -sf /etc/reeder/config.toml /var/lib/reeder/config.toml
+    
+    # Create cache directory
+    install -dm750 -o reeder -g reeder /var/lib/reeder/.cache
+    
+    # Initialize Python venv (UV_PROJECT_ENVIRONMENT tells uv where to create venv)
+    echo "Initializing Python virtual environment..."
+    sudo -u reeder UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv UV_CACHE_DIR=/var/lib/reeder/.cache/uv uv sync --project /usr/lib/reeder 2>/dev/null || true
+    
+    # Reload systemd
+    systemctl daemon-reload
+    
+    echo ""
+    echo "=== Reeder installed ==="
+    echo ""
+    echo "Next steps:"
+    echo "  1. Edit /etc/reeder/config.toml"
+    echo "  2. Copy voice files to /var/lib/reeder/voices/"
+    echo "  3. Enable services: systemctl enable --now reeder.path reeder-web"
+    echo "  4. (Optional) Configure Caddy with /etc/reeder/Caddyfile"
+    echo ""
+}
+
+post_upgrade() {
+    post_install
+    
+    # Restart services if running
+    if systemctl is-active --quiet reeder-web; then
+        systemctl restart reeder-web
+    fi
+    if systemctl is-active --quiet reeder.path; then
+        systemctl restart reeder.path
+    fi
+}
+
+pre_remove() {
+    # Stop and disable services
+    systemctl stop reeder.path reeder-web reeder.service 2>/dev/null || true
+    systemctl disable reeder.path reeder-web 2>/dev/null || true
+}
+
+post_remove() {
+    # Reload systemd
+    systemctl daemon-reload
+    
+    echo ""
+    echo "Reeder removed. Data remains in /var/lib/reeder/"
+    echo "To fully remove: rm -rf /var/lib/reeder /etc/reeder"
+    echo "To remove user: userdel reeder"
+    echo ""
+}

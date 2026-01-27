@@ -1,0 +1,18 @@
+[Unit]
+Description=Reeder TTS job processor
+After=network.target
+
+[Service]
+Type=oneshot
+User=reeder
+Group=reeder
+ExecStart=/usr/lib/reeder/bin/process-job
+WorkingDirectory=/var/lib/reeder
+Environment=HOME=/var/lib/reeder
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv
+Environment=UV_CACHE_DIR=/var/lib/reeder/.cache/uv
+Environment=HF_HOME=/var/lib/reeder/.cache/huggingface
+
+[Install]
+WantedBy=multi-user.target

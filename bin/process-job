@@ -16,12 +16,13 @@ def _bootstrap():
     try:
         import trafilatura  # noqa: F401
     except ImportError:
-        import os, subprocess, sys
-        # Find project root (where pyproject.toml is)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(script_dir)
-        # Re-exec with uv run
-        os.execvp("uv", ["uv", "run", "--project", project_root, sys.argv[0]] + sys.argv[1:])
+        import os, sys
+        # Re-exec with uv run using /usr/lib/reeder as project
+        # UV_PROJECT_ENVIRONMENT should be set by systemd to /var/lib/reeder/.venv
+        # Use --frozen to prevent writing to uv.lock in read-only /usr/lib
+        project_root = "/usr/lib/reeder" if os.path.exists("/usr/lib/reeder/pyproject.toml") else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        frozen = ["--frozen"] if project_root == "/usr/lib/reeder" else []
+        os.execvp("uv", ["uv", "run", "--project", project_root] + frozen + [sys.argv[0]] + sys.argv[1:])
 _bootstrap()
 
 import json

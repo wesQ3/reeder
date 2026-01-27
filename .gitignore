@@ -12,3 +12,11 @@ voices/*.safetensors
 *.wav
 __pycache__/
 .venv/
+
+# Build artifacts
+pkg/
+src/
+*.pkg.tar.zst
+
+# Local environment overrides
+.envrc.local
