@@ -1,0 +1,28 @@
+[Unit]
+Description=Reeder Web interface (dev)
+Documentation=https://github.com/yourname/reeder
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/code/reeder/bin/reeder-web
+
+# Environment
+Environment="REEDER_CONFIG=%h/code/reeder/config.dev.toml"
+Environment="REEDER_WEB_HOST=127.0.0.1"
+Environment="REEDER_WEB_PORT=8081"
+
+# Working directory
+WorkingDirectory=%h/code/reeder
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reeder-web
+
+[Install]
+WantedBy=default.target

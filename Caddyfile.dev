@@ -1,0 +1,39 @@
+# Reeder Development Caddyfile
+# Run with: caddy run --config Caddyfile.dev
+
+{
+    # Disable admin API to avoid port conflict with system Caddy
+    admin off
+}
+
+:8080 {
+    # Web interface and API - proxy to reeder-web
+    handle /add* {
+        reverse_proxy localhost:8081
+    }
+    handle /status {
+        reverse_proxy localhost:8081
+    }
+    handle /bookmarklet {
+        reverse_proxy localhost:8081
+    }
+    handle / {
+        reverse_proxy localhost:8081
+    }
+
+    # Serve static files
+    handle /audio/* {
+        root * www
+        file_server browse
+    }
+    handle /feed.xml {
+        root * www
+        file_server
+        header Content-Type application/rss+xml
+    }
+
+    @opus path *.opus
+    header @opus Content-Type audio/opus
+
+    encode gzip
+}

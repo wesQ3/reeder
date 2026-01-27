@@ -13,16 +13,36 @@ your-hostname.tail1234.ts.net {
     # Use Tailscale-provided certificates
     tls /etc/caddy/certs/your-hostname.tail1234.ts.net.crt /etc/caddy/certs/your-hostname.tail1234.ts.net.key
 
-    # Serve static files from www directory
-    root * /var/lib/reeder/www
+    # Web interface and API - proxy to reeder-web
+    handle /add* {
+        reverse_proxy localhost:8081
+    }
+    handle /status {
+        reverse_proxy localhost:8081
+    }
+    handle /bookmarklet {
+        reverse_proxy localhost:8081
+    }
+    handle / {
+        reverse_proxy localhost:8081
+    }
 
-    # Enable file server
-    file_server
+    # Serve static files from www directory
+    handle /audio/* {
+        root * /var/lib/reeder/www
+        file_server
+    }
+    handle /feed.xml {
+        root * /var/lib/reeder/www
+        file_server
+        header Content-Type application/rss+xml
+    }
+    handle_path /static/* {
+        root * /var/lib/reeder/www
+        file_server
+    }
 
     # Set proper MIME types
-    @rss path /feed.xml
-    header @rss Content-Type application/rss+xml
-
     @opus path *.opus
     header @opus Content-Type audio/opus
 

@@ -3,6 +3,7 @@ inbox/
 processing/
 done/
 www/audio/
+www/feed.xml
 var/
 voices/*.wav
 voices/*.safetensors

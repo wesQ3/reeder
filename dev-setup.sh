@@ -54,21 +54,34 @@ echo "=== Enabling reeder.path ==="
 systemctl --user enable reeder.path
 systemctl --user start reeder.path
 
+# Enable and start the web interface
+echo ""
+echo "=== Enabling reeder-web ==="
+systemctl --user enable reeder-web.service
+systemctl --user start reeder-web.service
+
 echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Usage:"
 echo ""
-echo "  # Submit jobs"
+echo "  # Web interface (submit jobs via browser)"
+echo "  Open http://localhost:8081"
+echo "  Or with Caddy: caddy run --config Caddyfile.dev"
+echo "  Then open http://localhost:8080"
+echo ""
+echo "  # Submit jobs via CLI"
 echo "  export REEDER_CONFIG=$SCRIPT_DIR/config.dev.toml"
 echo "  $SCRIPT_DIR/bin/submit-url https://example.com/article"
 echo ""
 echo "  # Check status"
 echo "  systemctl --user status reeder.path"
 echo "  systemctl --user status reeder.service"
+echo "  systemctl --user status reeder-web"
 echo ""
 echo "  # View logs"
 echo "  journalctl --user -u reeder -f"
+echo "  journalctl --user -u reeder-web -f"
 echo ""
 echo "  # Manual trigger"
 echo "  systemctl --user start reeder.service"

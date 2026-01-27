@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""
+Reeder Web - Simple HTTP endpoint for submitting jobs.
+
+Endpoints:
+  GET  /           - Simple HTML form
+  GET  /add?url=X  - Add URL job (for bookmarklets/shortcuts)
+  POST /add        - Add job via form submission
+  GET  /status     - Quick status check
+"""
+
+import json
+import os
+import re
+import tomllib
+from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+
+def load_config():
+    """Load config to find paths."""
+    config_path = os.environ.get("REEDER_CONFIG")
+    if config_path:
+        candidates = [Path(config_path)]
+    else:
+        script_dir = Path(__file__).parent
+        candidates = [
+            script_dir.parent / "config.toml",
+            script_dir.parent / "config.dev.toml",
+            Path("/etc/reeder/config.toml"),
+            Path.home() / ".config/reeder/config.toml",
+        ]
+    
+    for candidate in candidates:
+        if candidate.exists():
+            with open(candidate, "rb") as f:
+                cfg = tomllib.load(f)
+            base = Path(cfg["paths"]["base_dir"])
+            if not base.is_absolute():
+                base = candidate.parent / base
+            return {
+                "inbox": base / cfg["paths"]["inbox"],
+                "processing": base / cfg["paths"]["processing"],
+                "done": base / cfg["paths"]["done"],
+                "status_file": base / cfg["paths"]["status_file"],
+            }
+    
+    base = Path("/var/lib/reeder")
+    return {
+        "inbox": base / "inbox",
+        "processing": base / "processing", 
+        "done": base / "done",
+        "status_file": base / "var/status.txt",
+    }
+
+
+PATHS = load_config()
+INBOX = PATHS["inbox"]
+
+HTML_FORM = """<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reeder</title>
+    <style>
+        body {{ font-family: system-ui; max-width: 500px; margin: 2em auto; padding: 1em; }}
+        input[type=url], input[type=text] {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
+        button {{ padding: 0.75em 2em; font-size: 1em; }}
+        .success {{ color: green; }}
+        .error {{ color: red; }}
+    </style>
+</head>
+<body>
+    <h1>📖 Reeder</h1>
+    {message}
+    <form method="POST" action="/add">
+        <input type="url" name="url" placeholder="https://example.com/article" required>
+        <input type="text" name="title" placeholder="Title (optional)">
+        <button type="submit">Add to Queue</button>
+    </form>
+    <hr>
+    <p>📡 <a href="/feed.xml">RSS Feed</a> | 🎧 <a href="/audio/">Audio Files</a></p>
+    <p><small><a href="/status">Status</a> | <a href="/bookmarklet">Bookmarklet</a></small></p>
+</body>
+</html>
+"""
+
+BOOKMARKLET_PAGE = """<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reeder Bookmarklet</title>
+    <style>
+        body {{ font-family: system-ui; max-width: 600px; margin: 2em auto; padding: 1em; }}
+        code {{ background: #f0f0f0; padding: 0.2em 0.5em; }}
+        pre {{ background: #f0f0f0; padding: 1em; overflow-x: auto; }}
+        a.bookmarklet {{ 
+            display: inline-block; padding: 0.5em 1em; 
+            background: #007bff; color: white; text-decoration: none; 
+            border-radius: 4px; margin: 1em 0;
+        }}
+    </style>
+</head>
+<body>
+    <h1>📖 Reeder Bookmarklet</h1>
+    
+    <h2>Desktop Browser</h2>
+    <p>Drag this to your bookmarks bar:</p>
+    <p><a class="bookmarklet" href="javascript:(function(){{window.location='REEDER_URL/add?url='+encodeURIComponent(window.location.href)+'&title='+encodeURIComponent(document.title)}})();">📖 Read Later</a></p>
+    
+    <h2>iOS Shortcut</h2>
+    <p>Create a shortcut with these actions:</p>
+    <ol>
+        <li>Accept <strong>URLs</strong> from Share Sheet</li>
+        <li><strong>Get Contents of URL</strong>: <code>REEDER_URL/add?url=[Shortcut Input]</code></li>
+        <li><strong>Show Result</strong></li>
+    </ol>
+    
+    <h2>Manual URL</h2>
+    <pre>REEDER_URL/add?url=YOUR_URL&title=OPTIONAL_TITLE</pre>
+    
+    <p><a href="/">← Back</a></p>
+</body>
+</html>
+"""
+
+
+def slugify(text: str, max_len: int = 50) -> str:
+    """Convert text to a URL-safe slug."""
+    text = re.sub(r"https?://", "", text)
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", text)
+    return text[:max_len].strip("-")
+
+
+def create_job(url: str, title: str = "") -> str:
+    """Create a job file and return the filename."""
+    timestamp = int(datetime.now().timestamp())
+    slug = slugify(title or url)
+    filename = f"{timestamp}-{slug}.json"
+    
+    job = {"type": "url", "url": url}
+    if title:
+        job["title"] = title
+    
+    job_path = INBOX / filename
+    INBOX.mkdir(parents=True, exist_ok=True)
+    
+    with open(job_path, "w") as f:
+        json.dump(job, f, indent=2)
+    
+    return filename
+
+
+class ReederHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        print(f"[{self.address_string()}] {format % args}")
+    
+    def send_html(self, content: str, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(content.encode())
+    
+    def send_text(self, content: str, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(content.encode())
+    
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+        
+        if path == "/":
+            self.send_html(HTML_FORM.format(message=""))
+        
+        elif path == "/add":
+            url = params.get("url", [""])[0]
+            title = params.get("title", [""])[0]
+            
+            if not url:
+                self.send_text("Error: missing 'url' parameter", 400)
+                return
+            
+            try:
+                filename = create_job(url, title)
+                # Check Accept header for response format
+                if "text/html" in self.headers.get("Accept", ""):
+                    msg = f'<p class="success">✅ Queued: {filename}</p>'
+                    self.send_html(HTML_FORM.format(message=msg))
+                else:
+                    self.send_text(f"Queued: {filename}")
+            except Exception as e:
+                self.send_text(f"Error: {e}", 500)
+        
+        elif path == "/status":
+            try:
+                inbox_count = len(list(PATHS["inbox"].glob("*.json")))
+                processing_count = len(list(PATHS["processing"].glob("*.json")))
+                done_count = len(list(PATHS["done"].glob("*.json")))
+                failed_count = len(list(PATHS["done"].glob("FAILED-*.json")))
+                
+                lines = [f"Inbox: {inbox_count} job(s)"]
+                
+                if processing_count > 0:
+                    lines.append(f"Processing: {processing_count} job(s)")
+                
+                # Read current status from status file
+                status_file = PATHS["status_file"]
+                if status_file.exists():
+                    with open(status_file) as f:
+                        status_lines = f.read().strip().split("\n")
+                    if len(status_lines) >= 2:
+                        lines.append(f"Current: {status_lines[1]}")
+                        lines.append(f"Updated: {status_lines[0]}")
+                
+                lines.append(f"Completed: {done_count - failed_count}")
+                if failed_count > 0:
+                    lines.append(f"Failed: {failed_count}")
+                lines.append("OK")
+                
+                self.send_text("\n".join(lines))
+            except Exception as e:
+                self.send_text(f"Error: {e}", 500)
+        
+        elif path == "/bookmarklet":
+            # Get the host from request
+            host = self.headers.get("Host", "localhost:8081")
+            scheme = "https" if "443" in host else "http"
+            base_url = f"{scheme}://{host}"
+            content = BOOKMARKLET_PAGE.replace("REEDER_URL", base_url)
+            self.send_html(content)
+        
+        else:
+            self.send_text("Not found", 404)
+    
+    def do_POST(self):
+        if self.path != "/add":
+            self.send_text("Not found", 404)
+            return
+        
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode()
+        params = parse_qs(body)
+        
+        url = params.get("url", [""])[0]
+        title = params.get("title", [""])[0]
+        
+        if not url:
+            msg = '<p class="error">❌ Error: URL is required</p>'
+            self.send_html(HTML_FORM.format(message=msg), 400)
+            return
+        
+        try:
+            filename = create_job(url, title)
+            msg = f'<p class="success">✅ Queued: {filename}</p>'
+            self.send_html(HTML_FORM.format(message=msg))
+        except Exception as e:
+            msg = f'<p class="error">❌ Error: {e}</p>'
+            self.send_html(HTML_FORM.format(message=msg), 500)
+
+
+def main():
+    host = os.environ.get("REEDER_WEB_HOST", "127.0.0.1")
+    port = int(os.environ.get("REEDER_WEB_PORT", "8081"))
+    
+    print(f"Reeder Web starting on http://{host}:{port}")
+    print(f"Inbox: {INBOX}")
+    
+    server = HTTPServer((host, port), ReederHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
