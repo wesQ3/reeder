@@ -1,70 +1,41 @@
 # Reeder Caddyfile
-# Serves audio files and RSS feed over HTTPS
-#
-# For Tailscale, get a certificate with:
-#   tailscale cert your-hostname.tail1234.ts.net
-#
-# Then update the hostname below and copy certs:
-#   sudo mkdir -p /etc/caddy/certs
-#   sudo cp your-hostname.* /etc/caddy/certs/
+# Serves audio files and RSS feed over HTTP
 
-# Replace with your Tailscale hostname
-your-hostname.tail1234.ts.net {
-    # Use Tailscale-provided certificates
-    tls /etc/caddy/certs/your-hostname.tail1234.ts.net.crt /etc/caddy/certs/your-hostname.tail1234.ts.net.key
+:80 {
+    root * /var/lib/reeder/www
 
-    # Web interface and API - proxy to reeder-web
-    handle /add* {
-        reverse_proxy localhost:8081
-    }
-    handle /status {
-        reverse_proxy localhost:8081
-    }
-    handle /bookmarklet {
-        reverse_proxy localhost:8081
-    }
-    handle / {
-        reverse_proxy localhost:8081
+    # Audio files with directory browsing
+    @audio path /audio/*
+    handle @audio {
+        file_server browse
     }
 
-    # Serve static files from www directory
-    handle /audio/* {
-        root * /var/lib/reeder/www
-        file_server
+    # Redirect /audio to /audio/
+    handle /audio {
+        redir /audio/ permanent
     }
-    handle /feed.xml {
-        root * /var/lib/reeder/www
-        file_server
+
+    # RSS feed
+    @feed path /feed.xml
+    handle @feed {
         header Content-Type application/rss+xml
-    }
-    handle_path /static/* {
-        root * /var/lib/reeder/www
         file_server
     }
 
-    # Set proper MIME types
+    # Everything else proxies to reeder-web
+    handle {
+        reverse_proxy localhost:8081
+    }
+
+    # MIME types
     @opus path *.opus
     header @opus Content-Type audio/opus
 
-    # Enable compression for feed
+    # Compression
     encode gzip
 
     # Logging
     log {
         output file /var/log/caddy/reeder.log
-        format console
     }
 }
-
-# Alternative: Simple HTTP-only config for local/Tailscale use
-# (Tailscale's MagicDNS provides secure transport)
-#
-# :8080 {
-#     root * /var/lib/reeder/www
-#     file_server
-#     
-#     @rss path /feed.xml
-#     header @rss Content-Type application/rss+xml
-#     
-#     encode gzip
-# }

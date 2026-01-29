@@ -40,7 +40,7 @@ description = "Articles converted to audio"
 author = "Reeder TTS"
 language = "en-us"
 
-# Base URL for audio files and feed (your Tailscale hostname)
+# Base URL for audio files and feed (set on deploy host)
 # Example: "https://myserver.tail1234.ts.net/reeder"
 base_url = "http://localhost:8080"
 
