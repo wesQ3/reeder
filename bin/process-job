@@ -182,7 +182,15 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     if voice == "default":
         voice_path = paths["voices"] / config["tts"]["default_voice"]
     elif not Path(voice).is_absolute():
+        # Try to resolve voice name to file path
         voice_path = paths["voices"] / voice
+        # If no extension, try common extensions
+        if not voice_path.exists():
+            for ext in (".safetensors", ".wav"):
+                candidate = paths["voices"] / f"{voice}{ext}"
+                if candidate.exists():
+                    voice_path = candidate
+                    break
     else:
         voice_path = Path(voice)
 
