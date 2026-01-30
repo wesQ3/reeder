@@ -45,6 +45,7 @@ def load_config():
                 "processing": base / cfg["paths"]["processing"],
                 "done": base / cfg["paths"]["done"],
                 "status_file": base / cfg["paths"]["status_file"],
+                "voices": base / cfg["paths"]["voices"],
             }
     
     base = Path("/var/lib/reeder")
@@ -53,11 +54,36 @@ def load_config():
         "processing": base / "processing", 
         "done": base / "done",
         "status_file": base / "var/status.txt",
+        "voices": base / "voices",
     }
+
+
+def enumerate_voices():
+    """Find available voice files and return list of names."""
+    voices_dir = PATHS.get("voices")
+    if not voices_dir or not voices_dir.exists():
+        return ["default"]
+    
+    voices = []
+    for ext in ("*.safetensors", "*.wav"):
+        for path in voices_dir.glob(ext):
+            name = path.stem
+            if name not in voices:
+                voices.append(name)
+    
+    # Sort with default first
+    voices.sort(key=lambda x: (x != "default", x))
+    return voices if voices else ["default"]
 
 
 PATHS = load_config()
 INBOX = PATHS["inbox"]
+VOICES = enumerate_voices()
+
+# Build voice options HTML at startup
+VOICE_OPTIONS = "\n".join(
+    f'        <option value="{v}">{v}</option>' for v in VOICES
+)
 
 HTML_FORM = """<!DOCTYPE html>
 <html>
@@ -66,10 +92,11 @@ HTML_FORM = """<!DOCTYPE html>
     <title>Reeder</title>
     <style>
         body {{ font-family: system-ui; max-width: 500px; margin: 2em auto; padding: 1em; }}
-        input[type=url], input[type=text] {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
+        input[type=url], input[type=text], select {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
         button {{ padding: 0.75em 2em; font-size: 1em; }}
         .success {{ color: green; }}
         .error {{ color: red; }}
+        label {{ font-size: 0.9em; color: #666; }}
     </style>
 </head>
 <body>
@@ -78,6 +105,10 @@ HTML_FORM = """<!DOCTYPE html>
     <form method="POST" action="/add">
         <input type="url" name="url" placeholder="https://example.com/article" required>
         <input type="text" name="title" placeholder="Title (optional)">
+        <label for="voice">Voice</label>
+        <select name="voice" id="voice">
+""" + VOICE_OPTIONS + """
+        </select>
         <button type="submit">Add to Queue</button>
     </form>
     <hr>
@@ -134,7 +165,7 @@ def slugify(text: str, max_len: int = 50) -> str:
     return text[:max_len].strip("-")
 
 
-def create_job(url: str, title: str = "") -> str:
+def create_job(url: str, title: str = "", voice: str = "default") -> str:
     """Create a job file and return the filename."""
     timestamp = int(datetime.now().timestamp())
     slug = slugify(title or url)
@@ -143,6 +174,8 @@ def create_job(url: str, title: str = "") -> str:
     job = {"type": "url", "url": url}
     if title:
         job["title"] = title
+    if voice and voice != "default":
+        job["voice"] = voice
     
     job_path = INBOX / filename
     INBOX.mkdir(parents=True, exist_ok=True)
@@ -180,13 +213,14 @@ class ReederHandler(BaseHTTPRequestHandler):
         elif path == "/add":
             url = params.get("url", [""])[0]
             title = params.get("title", [""])[0]
+            voice = params.get("voice", ["default"])[0]
             
             if not url:
                 self.send_text("Error: missing 'url' parameter", 400)
                 return
             
             try:
-                filename = create_job(url, title)
+                filename = create_job(url, title, voice)
                 # Check Accept header for response format
                 if "text/html" in self.headers.get("Accept", ""):
                     msg = f'<p class="success">✅ Queued: {filename}</p>'
@@ -248,6 +282,7 @@ class ReederHandler(BaseHTTPRequestHandler):
         
         url = params.get("url", [""])[0]
         title = params.get("title", [""])[0]
+        voice = params.get("voice", ["default"])[0]
         
         if not url:
             msg = '<p class="error">❌ Error: URL is required</p>'
@@ -255,7 +290,7 @@ class ReederHandler(BaseHTTPRequestHandler):
             return
         
         try:
-            filename = create_job(url, title)
+            filename = create_job(url, title, voice)
             msg = f'<p class="success">✅ Queued: {filename}</p>'
             self.send_html(HTML_FORM.format(message=msg))
         except Exception as e:
@@ -269,6 +304,7 @@ def main():
     
     print(f"Reeder Web starting on http://{host}:{port}")
     print(f"Inbox: {INBOX}")
+    print(f"Voices: {', '.join(VOICES)}")
     
     server = HTTPServer((host, port), ReederHandler)
     try:
