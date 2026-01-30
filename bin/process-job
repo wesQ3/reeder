@@ -336,20 +336,25 @@ def main():
         if name != "status":
             path.mkdir(parents=True, exist_ok=True)
 
-    # Check for job
-    job_path = get_oldest_job(paths["inbox"])
-    if not job_path:
+    # Process all jobs in queue
+    processed = 0
+    while True:
+        job_path = get_oldest_job(paths["inbox"])
+        if not job_path:
+            break
+        
+        try:
+            process_job(job_path, config, paths)
+            processed += 1
+        except Exception as e:
+            # Job failed but continue with next
+            print(f"Job failed: {e}", file=sys.stderr)
+            processed += 1
+
+    if processed == 0:
         write_status(paths, "Idle - no jobs in queue")
-        return
-
-    # Process job
-    process_job(job_path, config, paths)
-
-    # Check if there are more jobs
-    next_job = get_oldest_job(paths["inbox"])
-    if next_job:
-        remaining = len(list(paths["inbox"].glob("*.json")))
-        write_status(paths, f"Idle - {remaining} job(s) remaining")
+    else:
+        write_status(paths, f"Idle - processed {processed} job(s)")
 
 
 if __name__ == "__main__":
