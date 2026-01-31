@@ -92,25 +92,63 @@ HTML_FORM = """<!DOCTYPE html>
     <title>Reeder</title>
     <style>
         body {{ font-family: system-ui; max-width: 500px; margin: 2em auto; padding: 1em; }}
-        input[type=url], input[type=text], select {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
+        input[type=url], input[type=text], select, textarea {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
+        textarea {{ min-height: 150px; font-family: inherit; }}
         button {{ padding: 0.75em 2em; font-size: 1em; }}
         .success {{ color: green; }}
         .error {{ color: red; }}
         label {{ font-size: 0.9em; color: #666; }}
+        .tabs {{ display: flex; gap: 0; margin-bottom: 1em; }}
+        .tab {{ padding: 0.5em 1em; cursor: pointer; border: 1px solid #ccc; background: #f5f5f5; }}
+        .tab.active {{ background: white; border-bottom: 1px solid white; margin-bottom: -1px; }}
+        .tab-content {{ display: none; padding: 1em; border: 1px solid #ccc; }}
+        .tab-content.active {{ display: block; }}
     </style>
 </head>
 <body>
     <h1>📖 Reeder</h1>
     {message}
-    <form method="POST" action="/add">
-        <input type="url" name="url" placeholder="https://example.com/article" required>
-        <input type="text" name="title" placeholder="Title (optional)">
-        <label for="voice">Voice</label>
-        <select name="voice" id="voice">
+    
+    <div class="tabs">
+        <div class="tab active" onclick="showTab('url')">URL</div>
+        <div class="tab" onclick="showTab('text')">Text</div>
+    </div>
+    
+    <div id="url-tab" class="tab-content active">
+        <form method="POST" action="/add">
+            <input type="hidden" name="type" value="url">
+            <input type="url" name="url" placeholder="https://example.com/article" required>
+            <input type="text" name="title" placeholder="Title (optional)">
+            <label for="voice-url">Voice</label>
+            <select name="voice" id="voice-url">
 """ + VOICE_OPTIONS + """
-        </select>
-        <button type="submit">Add to Queue</button>
-    </form>
+            </select>
+            <button type="submit">Add to Queue</button>
+        </form>
+    </div>
+    
+    <div id="text-tab" class="tab-content">
+        <form method="POST" action="/add">
+            <input type="hidden" name="type" value="text">
+            <input type="text" name="title" placeholder="Title" required>
+            <textarea name="text" placeholder="Paste or type your text here..." required></textarea>
+            <label for="voice-text">Voice</label>
+            <select name="voice" id="voice-text">
+""" + VOICE_OPTIONS + """
+            </select>
+            <button type="submit">Add to Queue</button>
+        </form>
+    </div>
+    
+    <script>
+    function showTab(tab) {{
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelector('.tab:nth-child(' + (tab === 'url' ? '1' : '2') + ')').classList.add('active');
+        document.getElementById(tab + '-tab').classList.add('active');
+    }}
+    </script>
+    
     <hr>
     <p>📡 <a href="/feed.xml">RSS Feed</a> | 🎧 <a href="/audio/">Audio Files</a></p>
     <p><small><a href="/status">Status</a> | <a href="/bookmarklet">Bookmarklet</a></small></p>
@@ -165,14 +203,21 @@ def slugify(text: str, max_len: int = 50) -> str:
     return text[:max_len].strip("-")
 
 
-def create_job(url: str, title: str = "", voice: str = "default") -> str:
+def create_job(url: str = "", title: str = "", voice: str = "default", text: str = "", job_type: str = "url") -> str:
     """Create a job file and return the filename."""
     timestamp = int(datetime.now().timestamp())
-    slug = slugify(title or url)
+    slug = slugify(title or url or "text")
     filename = f"{timestamp}-{slug}.json"
     
-    job = {"type": "url", "url": url}
+    if job_type == "text" and text:
+        job = {"type": "text", "text": text}
+    else:
+        job = {"type": "url", "url": url}
+    
     if title:
+        job["title"] = title
+    if voice and voice != "default":
+        job["voice"] = voice
         job["title"] = title
     if voice and voice != "default":
         job["voice"] = voice
@@ -280,17 +325,30 @@ class ReederHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length).decode()
         params = parse_qs(body)
         
+        job_type = params.get("type", ["url"])[0]
         url = params.get("url", [""])[0]
         title = params.get("title", [""])[0]
         voice = params.get("voice", ["default"])[0]
+        text = params.get("text", [""])[0]
         
-        if not url:
-            msg = '<p class="error">❌ Error: URL is required</p>'
-            self.send_html(HTML_FORM.format(message=msg), 400)
-            return
+        # Validate based on job type
+        if job_type == "text":
+            if not text:
+                msg = '<p class="error">❌ Error: Text is required</p>'
+                self.send_html(HTML_FORM.format(message=msg), 400)
+                return
+            if not title:
+                msg = '<p class="error">❌ Error: Title is required for text jobs</p>'
+                self.send_html(HTML_FORM.format(message=msg), 400)
+                return
+        else:
+            if not url:
+                msg = '<p class="error">❌ Error: URL is required</p>'
+                self.send_html(HTML_FORM.format(message=msg), 400)
+                return
         
         try:
-            filename = create_job(url, title, voice)
+            filename = create_job(url=url, title=title, voice=voice, text=text, job_type=job_type)
             msg = f'<p class="success">✅ Queued: {filename}</p>'
             self.send_html(HTML_FORM.format(message=msg))
         except Exception as e:
