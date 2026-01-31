@@ -6,7 +6,7 @@ pkgdesc="Personal TTS RSS service - convert articles to audio podcasts"
 arch=('any')
 url="https://github.com/youruser/reeder"
 license=('MIT')
-depends=('python>=3.11' 'uv' 'caddy' 'ffmpeg')
+depends=('python>=3.11' 'uv' 'caddy' 'ffmpeg' 'sox')
 backup=('etc/reeder/config.toml')
 install=reeder.install
 source=()

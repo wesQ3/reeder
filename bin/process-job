@@ -200,8 +200,131 @@ def get_tts_model(device: str = "cpu"):
     return _tts_model
 
 
+def split_text_into_chunks(text: str, tokenizer, max_tokens: int = 50) -> list[str]:
+    """Split text into chunks at sentence boundaries using the Qwen tokenizer.
+    
+    Uses actual token counts for accurate chunking. Avoids splitting on
+    common abbreviations (Mr., Dr., etc.).
+    
+    Args:
+        text: The text to split
+        tokenizer: The Qwen tokenizer instance
+        max_tokens: Maximum tokens per chunk (default 50)
+    
+    Returns:
+        List of text chunks, each ending at a sentence boundary when possible
+    """
+    import re
+    
+    # Normalize whitespace
+    text = text.strip()
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Check if text is short enough already
+    total_tokens = len(tokenizer(text, return_tensors='pt').input_ids[0])
+    if total_tokens <= max_tokens:
+        return [text]
+    
+    # Common abbreviations that shouldn't trigger sentence splits
+    # We protect them by temporarily replacing them
+    abbreviations = [
+        (r'\bMr\.', 'Mr\x00'),
+        (r'\bMrs\.', 'Mrs\x00'),
+        (r'\bMs\.', 'Ms\x00'),
+        (r'\bDr\.', 'Dr\x00'),
+        (r'\bProf\.', 'Prof\x00'),
+        (r'\bSr\.', 'Sr\x00'),
+        (r'\bJr\.', 'Jr\x00'),
+        (r'\bSt\.', 'St\x00'),
+        (r'\bvs\.', 'vs\x00'),
+        (r'\betc\.', 'etc\x00'),
+        (r'\be\.g\.', 'eg\x00'),
+        (r'\bi\.e\.', 'ie\x00'),
+        (r'\bU\.S\.', 'US\x00'),
+        (r'\bU\.K\.', 'UK\x00'),
+        (r'\bNo\.', 'No\x00'),
+        (r'\bCo\.', 'Co\x00'),
+        (r'\bInc\.', 'Inc\x00'),
+        (r'\bLtd\.', 'Ltd\x00'),
+        (r'\bCorp\.', 'Corp\x00'),
+    ]
+    
+    protected = text
+    for pattern, replacement in abbreviations:
+        protected = re.sub(pattern, replacement, protected)
+    
+    # Split into sentences at .!? followed by space and capital letter or end
+    # This pattern requires the next char to be uppercase or end of string
+    sentences_raw = re.split(r'(?<=[.!?])\s+(?=[A-Z]|$)', protected)
+    
+    # Restore abbreviations
+    sentences = []
+    for s in sentences_raw:
+        restored = s.replace('\x00', '.')
+        if restored.strip():
+            sentences.append(restored.strip())
+    
+    if not sentences:
+        sentences = [text]
+    
+    # Count tokens for each sentence
+    sentence_tokens = []
+    for sentence in sentences:
+        num_tokens = len(tokenizer(sentence, return_tensors='pt').input_ids[0])
+        sentence_tokens.append((sentence, num_tokens))
+    
+    # Group sentences into chunks
+    chunks = []
+    current_chunk = ""
+    current_tokens = 0
+    
+    for sentence, num_tokens in sentence_tokens:
+        if not current_chunk:
+            current_chunk = sentence
+            current_tokens = num_tokens
+        elif current_tokens + num_tokens <= max_tokens:
+            current_chunk += " " + sentence
+            current_tokens += num_tokens
+        else:
+            chunks.append(current_chunk)
+            current_chunk = sentence
+            current_tokens = num_tokens
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    # Handle chunks that are still too long (single long sentence)
+    final_chunks = []
+    for chunk in chunks:
+        chunk_tokens = len(tokenizer(chunk, return_tensors='pt').input_ids[0])
+        if chunk_tokens <= max_tokens:
+            final_chunks.append(chunk)
+        else:
+            # Split on clause boundaries (comma, semicolon, colon)
+            parts = re.split(r'(?<=[,;:])\s+', chunk)
+            sub_chunk = ""
+            sub_tokens = 0
+            for part in parts:
+                part_tokens = len(tokenizer(part, return_tensors='pt').input_ids[0])
+                if not sub_chunk:
+                    sub_chunk = part
+                    sub_tokens = part_tokens
+                elif sub_tokens + part_tokens <= max_tokens:
+                    sub_chunk += " " + part
+                    sub_tokens += part_tokens
+                else:
+                    final_chunks.append(sub_chunk)
+                    sub_chunk = part
+                    sub_tokens = part_tokens
+            if sub_chunk:
+                final_chunks.append(sub_chunk)
+    
+    return final_chunks
+
+
 def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths: dict):
-    """Generate audio using Qwen3-TTS."""
+    """Generate audio using Qwen3-TTS with chunking for long texts."""
+    import numpy as np
     import soundfile as sf
     
     voice = job.get("voice", "default")
@@ -240,7 +363,14 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     # Load model
     tts = get_tts_model(device)
     
-    # Generate audio
+    # Split text into chunks for better generation quality
+    # Use the model's tokenizer for accurate token counting
+    tokenizer = tts.processor.tokenizer
+    max_tokens = config["tts"].get("max_tokens_per_chunk", 50)
+    chunks = split_text_into_chunks(text, tokenizer, max_tokens=max_tokens)
+    print(f"  Text split into {len(chunks)} chunk(s)")
+    
+    # Generate audio for each chunk
     gen_kwargs = dict(
         max_new_tokens=4096,
         do_sample=True,
@@ -254,17 +384,30 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
         subtalker_temperature=temperature,
     )
     
-    wavs, sr = tts.generate_voice_clone(
-        text=text,
-        language=language,
-        ref_audio=str(voice_wav),
-        ref_text=ref_text,
-        x_vector_only_mode=False,
-        **gen_kwargs,
-    )
+    audio_segments = []
+    sample_rate = None
+    
+    for i, chunk in enumerate(chunks):
+        print(f"  Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...")
+        wavs, sr = tts.generate_voice_clone(
+            text=chunk,
+            language=language,
+            ref_audio=str(voice_wav),
+            ref_text=ref_text,
+            x_vector_only_mode=False,
+            **gen_kwargs,
+        )
+        audio_segments.append(wavs[0])
+        sample_rate = sr
+    
+    # Concatenate all audio segments
+    if len(audio_segments) == 1:
+        final_audio = audio_segments[0]
+    else:
+        final_audio = np.concatenate(audio_segments)
     
     # Save output
-    sf.write(str(output_path), wavs[0], sr)
+    sf.write(str(output_path), final_audio, sample_rate)
 
 
 def convert_audio(wav_path: Path, output_path: Path, config: dict) -> int:
