@@ -29,9 +29,9 @@ post_install() {
         echo "Added caddy user to reeder group"
     fi
 
-    # Initialize Python venv (UV_PROJECT_ENVIRONMENT tells uv where to create venv)
-    echo "Initializing Python virtual environment..."
-    sudo -u reeder UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv UV_CACHE_DIR=/var/lib/reeder/.cache/uv uv sync --project /usr/lib/reeder 2>/dev/null || true
+    # Initialize Python venv with Python 3.13 (onnxruntime doesn't support 3.14 yet)
+    echo "Initializing Python virtual environment with Python 3.13..."
+    sudo -u reeder UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv UV_CACHE_DIR=/var/lib/reeder/.cache/uv uv sync --python 3.13 --project /usr/lib/reeder 2>/dev/null || true
 
     # Reload systemd
     systemctl daemon-reload

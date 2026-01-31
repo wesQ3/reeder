@@ -20,7 +20,5 @@ dev = [
 reeder-process = "bin.process_job:main"
 reeder-feed = "bin.update_feed:main"
 
-[tool.uv]
-dev-dependencies = [
-    "ruff",
-]
+[dependency-groups]
+dev = ["ruff"]
