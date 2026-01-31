@@ -15,7 +15,6 @@ status_file = "var/status.txt"
 
 [tts]
 # Default voice file (relative to voices dir, or absolute path)
-# Use .safetensors for faster loading (convert with: bin/convert-voices)
 default_voice = "default.safetensors"
 
 # Default TTS parameters
