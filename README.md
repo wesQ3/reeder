@@ -26,13 +26,10 @@ www/feed.xml     → RSS podcast feed
 # Configure (edit base_url and voice settings)
 sudo vim /var/lib/reeder/config.toml
 
-# Add a voice file
+# Add a voice file (WAV audio + TXT transcript)
 sudo cp your-voice.wav /var/lib/reeder/voices/default.wav
-sudo chown reeder:reeder /var/lib/reeder/voices/default.wav
-
-# Convert to safetensors for faster loading (recommended)
-# Note: Uses GitHub version for safetensors support
-sudo -u reeder uvx --from git+https://github.com/kyutai-labs/pocket-tts.git pocket-tts export-voice /var/lib/reeder/voices/default.wav /var/lib/reeder/voices/default.safetensors --truncate
+sudo cp your-voice.txt /var/lib/reeder/voices/default.txt
+sudo chown -R reeder:reeder /var/lib/reeder/voices/
 
 # Submit a test job
 echo '{"type":"text","text":"Hello world","title":"Test"}' | \
@@ -103,7 +100,7 @@ Subscribe to `https://your-hostname/feed.xml` in any podcast app:
 
 - **systemd.path**: Watches inbox for new job files
 - **systemd.service**: Processes one job at a time
-- **pocket-tts**: Generates speech audio
+- **Qwen3-TTS**: Generates speech audio with voice cloning
 - **trafilatura**: Extracts article text from URLs
 - **Caddy**: Serves audio files and RSS feed over HTTPS
 
@@ -129,9 +126,10 @@ bin/reeder-status
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.13 (required for onnxruntime compatibility)
 - uv (Python package manager)
 - ffmpeg
+- sox
 - curl
 - pup (for custom CSS selectors)
 - Caddy (optional, for HTTPS)

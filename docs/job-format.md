@@ -50,7 +50,7 @@ The timestamp ensures FIFO ordering. The slug is optional but helps identify job
 | `title` | No | Extracted or "Untitled" | Episode title in RSS feed |
 | `source_url` | No | - | Original source URL (for text type, used in feed) |
 | `extractor` | No | `"auto"` | Text extraction method (see below) |
-| `voice` | No | `"default"` | Voice name or path (see config.toml). Use .safetensors for faster loading |
+| `voice` | No | `"default"` | Voice name (see voices/ directory) |
 | `temperature` | No | `0.8` | TTS temperature (0.0-1.0, higher = more expressive) |
 | `description` | No | - | Episode description for RSS feed |
 
