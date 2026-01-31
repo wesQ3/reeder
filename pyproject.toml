@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "trafilatura>=1.6.0",
+    "qwen-tts",
+    "torch",
+    "soundfile",
 ]
 
 [project.optional-dependencies]

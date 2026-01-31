@@ -73,10 +73,12 @@ def load_completed_jobs(done_dir: Path) -> list[dict]:
             jobs.append(job)
 
     # Sort by completion timestamp (newest first)
-    jobs.sort(
-        key=lambda j: j["_completed"]["timestamp"],
-        reverse=True,
-    )
+    # Support both old "timestamp" field and new "completed" field
+    def get_completion_time(j):
+        meta = j["_completed"]
+        return meta.get("completed", meta.get("timestamp", ""))
+    
+    jobs.sort(key=get_completion_time, reverse=True)
 
     return jobs
 
@@ -153,8 +155,9 @@ def generate_feed(jobs: list[dict], config: dict, paths: dict) -> Element:
         SubElement(item, "title").text = job.get("title", "Untitled")
         SubElement(item, "guid").text = completed["guid"]
 
-        # Pub date
-        timestamp = datetime.fromisoformat(completed["timestamp"])
+        # Pub date (support both old "timestamp" and new "completed" field)
+        timestamp_str = completed.get("completed", completed.get("timestamp"))
+        timestamp = datetime.fromisoformat(timestamp_str)
         SubElement(item, "pubDate").text = format_datetime(timestamp)
 
         # Description

@@ -6,6 +6,7 @@ www/audio/
 www/feed.xml
 var/
 voices/*.wav
+voices/*.txt
 voices/*.safetensors
 *.opus
 *.mp3
