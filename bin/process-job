@@ -26,6 +26,7 @@ def _bootstrap():
 _bootstrap()
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -35,6 +36,9 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+# Suppress noisy transformers warnings about pad_token_id
+logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)
 
 # Status file for remote monitoring
 STATUS_FILE = None
@@ -188,15 +192,15 @@ def get_tts_model(device: str = "cpu"):
         import torch
         from qwen_tts import Qwen3TTSModel
         
-        print(f"Loading TTS model: {TTS_MODEL_NAME}")
-        print(f"  Device: {device}")
-        print(f"  Dtype: torch.float32")
+        print(f"Loading TTS model: {TTS_MODEL_NAME}", flush=True)
+        print(f"  Device: {device}", flush=True)
+        print(f"  Dtype: torch.float32", flush=True)
         _tts_model = Qwen3TTSModel.from_pretrained(
             TTS_MODEL_NAME,
             device_map=device,
             dtype=torch.float32,
         )
-        print(f"  Model loaded successfully.")
+        print(f"  Model loaded successfully.", flush=True)
     return _tts_model
 
 
@@ -355,10 +359,10 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     temperature = job.get("temperature", config["tts"].get("temperature", 0.9))
     language = job.get("language", "Auto")
     
-    print(f"  Voice: {voice_name}")
-    print(f"  Reference audio: {voice_wav}")
-    print(f"  Temperature: {temperature}")
-    print(f"  Language: {language}")
+    print(f"  Voice: {voice_name}", flush=True)
+    print(f"  Reference audio: {voice_wav}", flush=True)
+    print(f"  Temperature: {temperature}", flush=True)
+    print(f"  Language: {language}", flush=True)
     
     # Load model
     tts = get_tts_model(device)
@@ -368,10 +372,12 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     tokenizer = tts.processor.tokenizer
     max_tokens = config["tts"].get("max_tokens_per_chunk", 50)
     chunks = split_text_into_chunks(text, tokenizer, max_tokens=max_tokens)
-    print(f"  Text split into {len(chunks)} chunk(s)")
+    print(f"  Text split into {len(chunks)} chunk(s)", flush=True)
     
     # Generate audio for each chunk
+    # Note: pad_token_id set explicitly to suppress warning messages
     gen_kwargs = dict(
+        pad_token_id=tts.processor.tokenizer.eos_token_id,
         max_new_tokens=4096,
         do_sample=True,
         top_k=50,
@@ -388,7 +394,7 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     sample_rate = None
     
     for i, chunk in enumerate(chunks):
-        print(f"  Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...")
+        print(f"  Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...", flush=True)
         wavs, sr = tts.generate_voice_clone(
             text=chunk,
             language=language,
