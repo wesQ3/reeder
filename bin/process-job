@@ -374,6 +374,14 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     chunks = split_text_into_chunks(text, tokenizer, max_tokens=max_tokens)
     print(f"  Text split into {len(chunks)} chunk(s)", flush=True)
     
+    # Create voice clone prompt once and reuse for all chunks
+    print(f"  Creating voice clone prompt...", flush=True)
+    voice_clone_prompt = tts.create_voice_clone_prompt(
+        ref_audio=str(voice_wav),
+        ref_text=ref_text,
+        x_vector_only_mode=False,
+    )
+    
     # Generate audio for each chunk
     # Note: pad_token_id set explicitly to suppress warning messages
     gen_kwargs = dict(
@@ -398,9 +406,7 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
         wavs, sr = tts.generate_voice_clone(
             text=chunk,
             language=language,
-            ref_audio=str(voice_wav),
-            ref_text=ref_text,
-            x_vector_only_mode=False,
+            voice_clone_prompt=voice_clone_prompt,
             **gen_kwargs,
         )
         audio_segments.append(wavs[0])
