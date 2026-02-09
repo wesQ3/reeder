@@ -327,7 +327,11 @@ def split_text_into_chunks(text: str, tokenizer, max_tokens: int = 50) -> list[s
 
 
 def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths: dict):
-    """Generate audio using Qwen3-TTS with chunking for long texts."""
+    """Generate audio using Qwen3-TTS with chunking for long texts.
+    
+    Streams each chunk's audio to a raw PCM temp file to avoid holding
+    hours of audio in memory. The PCM file is converted to WAV at the end.
+    """
     import numpy as np
     import soundfile as sf
     
@@ -370,9 +374,11 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     # Split text into chunks for better generation quality
     # Use the model's tokenizer for accurate token counting
     tokenizer = tts.processor.tokenizer
-    max_tokens = config["tts"].get("max_tokens_per_chunk", 50)
+    max_tokens = config["tts"].get("max_tokens_per_chunk", 100)
     chunks = split_text_into_chunks(text, tokenizer, max_tokens=max_tokens)
-    print(f"  Text split into {len(chunks)} chunk(s)", flush=True)
+    total_chunks = len(chunks)
+    job_name = job.get("title", "untitled")
+    print(f"  Text split into {total_chunks} chunk(s)", flush=True)
     
     # Create voice clone prompt once and reuse for all chunks
     print(f"  Creating voice clone prompt...", flush=True)
@@ -398,28 +404,44 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
         subtalker_temperature=temperature,
     )
     
-    audio_segments = []
+    # Stream chunks to a raw PCM temp file to avoid holding all audio in memory
+    pcm_path = output_path.with_suffix(".pcm")
     sample_rate = None
     
-    for i, chunk in enumerate(chunks):
-        print(f"  Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...", flush=True)
-        wavs, sr = tts.generate_voice_clone(
-            text=chunk,
-            language=language,
-            voice_clone_prompt=voice_clone_prompt,
-            **gen_kwargs,
-        )
-        audio_segments.append(wavs[0])
-        sample_rate = sr
-    
-    # Concatenate all audio segments
-    if len(audio_segments) == 1:
-        final_audio = audio_segments[0]
-    else:
-        final_audio = np.concatenate(audio_segments)
-    
-    # Save output
-    sf.write(str(output_path), final_audio, sample_rate)
+    try:
+        with open(pcm_path, "wb") as pcm_file:
+            for i, chunk in enumerate(chunks):
+                write_status(paths, f"Generating audio: {job_name} (chunk {i+1}/{total_chunks})")
+                print(f"  Generating chunk {i+1}/{total_chunks} ({len(chunk)} chars)...", flush=True)
+                wavs, sr = tts.generate_voice_clone(
+                    text=chunk,
+                    language=language,
+                    voice_clone_prompt=voice_clone_prompt,
+                    **gen_kwargs,
+                )
+                # Write raw float32 PCM samples directly to disk
+                pcm_file.write(wavs[0].astype(np.float32).tobytes())
+                sample_rate = sr
+        
+        if sample_rate is None:
+            raise RuntimeError("No audio generated (empty text?)")
+        
+        # Convert raw PCM to WAV using ffmpeg (no need to load into memory)
+        print(f"  Writing WAV from raw PCM...", flush=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "f32le",           # raw float32 little-endian
+            "-ar", str(sample_rate), # sample rate
+            "-ac", "1",              # mono
+            "-i", str(pcm_path),
+            "-c:a", "pcm_s16le",     # standard 16-bit WAV
+            str(output_path),
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+    finally:
+        # Clean up the raw PCM file
+        if pcm_path.exists():
+            pcm_path.unlink()
 
 
 def convert_audio(wav_path: Path, output_path: Path, config: dict) -> int:
