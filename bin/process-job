@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -86,7 +87,7 @@ def write_status(paths: dict, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
     with open(status_path, "w") as f:
         f.write(f"{timestamp}\n{message}\n")
-    print(f"[STATUS] {message}")
+    print(f"[STATUS] {message}", flush=True)
 
 
 def get_oldest_job(inbox: Path) -> Path | None:
@@ -407,17 +408,40 @@ def generate_audio(text: str, output_path: Path, job: dict, config: dict, paths:
     # Stream chunks to a raw PCM temp file to avoid holding all audio in memory
     pcm_path = output_path.with_suffix(".pcm")
     sample_rate = None
+    # preseed history based on past runs
+    sample_per_token_history = [5110,4793,5234,5889,5130,5941,5877,5138,5607,6370,6260,6381,5894,5538,6027,5280]
+    std_dev_limit = 2.2
     
     try:
         with open(pcm_path, "wb") as pcm_file:
             for i, chunk in enumerate(chunks):
-                write_status(paths, f"Generating audio: {job_name} (chunk {i+1}/{total_chunks})")
-                print(f"  Generating chunk {i+1}/{total_chunks} ({len(chunk)} chars)...", flush=True)
+                chunk_tokens = len(tokenizer(chunk, return_tensors="pt").input_ids[0])
+                write_status(paths, f"Generating audio: {job_name} (chunk {i+1:>3}/{total_chunks},{len(chunk):>3}c,{chunk_tokens:>3}t)")
                 wavs, sr = tts.generate_voice_clone(
                     text=chunk,
                     language=language,
                     voice_clone_prompt=voice_clone_prompt,
                     **gen_kwargs,
+                )
+                segment_samples = len(wavs[0])
+                samples_per_token = (
+                    segment_samples / chunk_tokens if chunk_tokens > 0 else 0.0
+                )
+                # statistics
+                sample_per_token_history.append(samples_per_token)
+                running_avg = statistics.mean(sample_per_token_history)
+                std_dev = statistics.stdev(sample_per_token_history)
+
+                # Z-score: how many standard deviations away
+                z_score = abs(samples_per_token - running_avg) / std_dev if std_dev > 0 else 0
+                is_outlier = z_score > std_dev_limit
+                flag = " !!!" if is_outlier else ""
+
+                print(
+                    f"    Chunk {i+1:>3}/{total_chunks:<3} | {len(chunk):>3}c | {chunk_tokens:>3}t | "
+                    f"{segment_samples:>7,}s | {samples_per_token:>7,.2f} s/t | {segment_samples/sr:>5.2f}s | "
+                    f"{running_avg:>7,.2f}avg | {std_dev:>6,.2f}σ | {z_score:>4.2f}z{flag}",
+                    flush=True,
                 )
                 # Write raw float32 PCM samples directly to disk
                 pcm_file.write(wavs[0].astype(np.float32).tobytes())
