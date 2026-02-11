@@ -26,6 +26,10 @@ package() {
     install -Dm644 pyproject.toml "$pkgdir/usr/lib/reeder/pyproject.toml"
     install -Dm644 uv.lock "$pkgdir/usr/lib/reeder/uv.lock"
 
+    # Install HTML templates
+    install -Dm644 templates/index.html "$pkgdir/usr/lib/reeder/templates/index.html"
+    install -Dm644 templates/bookmarklet.html "$pkgdir/usr/lib/reeder/templates/bookmarklet.html"
+
     # Install config
     install -Dm644 config.toml "$pkgdir/etc/reeder/config.toml"
 

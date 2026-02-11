@@ -85,115 +85,27 @@ VOICE_OPTIONS = "\n".join(
     f'        <option value="{v}">{v}</option>' for v in VOICES
 )
 
-HTML_FORM = """<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Reeder</title>
-    <style>
-        body {{ font-family: system-ui; max-width: 500px; margin: 2em auto; padding: 1em; }}
-        input[type=url], input[type=text], select, textarea {{ width: 100%; padding: 0.5em; margin: 0.5em 0; box-sizing: border-box; }}
-        textarea {{ min-height: 150px; font-family: inherit; }}
-        button {{ padding: 0.75em 2em; font-size: 1em; }}
-        .success {{ color: green; }}
-        .error {{ color: red; }}
-        label {{ font-size: 0.9em; color: #666; }}
-        .tabs {{ display: flex; gap: 0; margin-bottom: 1em; }}
-        .tab {{ padding: 0.5em 1em; cursor: pointer; border: 1px solid #ccc; background: #f5f5f5; }}
-        .tab.active {{ background: white; border-bottom: 1px solid white; margin-bottom: -1px; }}
-        .tab-content {{ display: none; padding: 1em; border: 1px solid #ccc; }}
-        .tab-content.active {{ display: block; }}
-    </style>
-</head>
-<body>
-    <h1>📖 Reeder</h1>
-    {message}
-    
-    <div class="tabs">
-        <div class="tab active" onclick="showTab('url')">URL</div>
-        <div class="tab" onclick="showTab('text')">Text</div>
-    </div>
-    
-    <div id="url-tab" class="tab-content active">
-        <form method="POST" action="/add">
-            <input type="hidden" name="type" value="url">
-            <input type="url" name="url" placeholder="https://example.com/article" required>
-            <input type="text" name="title" placeholder="Title (optional)">
-            <label for="voice-url">Voice</label>
-            <select name="voice" id="voice-url">
-""" + VOICE_OPTIONS + """
-            </select>
-            <button type="submit">Add to Queue</button>
-        </form>
-    </div>
-    
-    <div id="text-tab" class="tab-content">
-        <form method="POST" action="/add">
-            <input type="hidden" name="type" value="text">
-            <input type="text" name="title" placeholder="Title" required>
-            <textarea name="text" placeholder="Paste or type your text here..." required></textarea>
-            <label for="voice-text">Voice</label>
-            <select name="voice" id="voice-text">
-""" + VOICE_OPTIONS + """
-            </select>
-            <button type="submit">Add to Queue</button>
-        </form>
-    </div>
-    
-    <script>
-    function showTab(tab) {{
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        document.querySelector('.tab:nth-child(' + (tab === 'url' ? '1' : '2') + ')').classList.add('active');
-        document.getElementById(tab + '-tab').classList.add('active');
-    }}
-    </script>
-    
-    <hr>
-    <p>📡 <a href="/feed.xml">RSS Feed</a> | 🎧 <a href="/audio/">Audio Files</a></p>
-    <p><small><a href="/status">Status</a> | <a href="/bookmarklet">Bookmarklet</a></small></p>
-</body>
-</html>
-"""
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
-BOOKMARKLET_PAGE = """<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Reeder Bookmarklet</title>
-    <style>
-        body {{ font-family: system-ui; max-width: 600px; margin: 2em auto; padding: 1em; }}
-        code {{ background: #f0f0f0; padding: 0.2em 0.5em; }}
-        pre {{ background: #f0f0f0; padding: 1em; overflow-x: auto; }}
-        a.bookmarklet {{ 
-            display: inline-block; padding: 0.5em 1em; 
-            background: #007bff; color: white; text-decoration: none; 
-            border-radius: 4px; margin: 1em 0;
-        }}
-    </style>
-</head>
-<body>
-    <h1>📖 Reeder Bookmarklet</h1>
-    
-    <h2>Desktop Browser</h2>
-    <p>Drag this to your bookmarks bar:</p>
-    <p><a class="bookmarklet" href="javascript:(function(){{window.location='REEDER_URL/add?url='+encodeURIComponent(window.location.href)+'&title='+encodeURIComponent(document.title)}})();">📖 Read Later</a></p>
-    
-    <h2>iOS Shortcut</h2>
-    <p>Create a shortcut with these actions:</p>
-    <ol>
-        <li>Accept <strong>URLs</strong> from Share Sheet</li>
-        <li><strong>Get Contents of URL</strong>: <code>REEDER_URL/add?url=[Shortcut Input]</code></li>
-        <li><strong>Show Result</strong></li>
-    </ol>
-    
-    <h2>Manual URL</h2>
-    <pre>REEDER_URL/add?url=YOUR_URL&title=OPTIONAL_TITLE</pre>
-    
-    <p><a href="/">← Back</a></p>
-</body>
-</html>
-"""
+
+def load_template(name: str) -> str:
+    """Load an HTML template from the templates directory."""
+    template_path = TEMPLATE_DIR / name
+    if not template_path.exists():
+        raise FileNotFoundError(f"Template not found: {template_path}")
+    return template_path.read_text(encoding="utf-8")
+
+
+HTML_FORM_TEMPLATE = load_template("index.html")
+BOOKMARKLET_TEMPLATE = load_template("bookmarklet.html")
+
+
+def render_form(message: str) -> str:
+    """Render the main form HTML with dynamic content."""
+    return (
+        HTML_FORM_TEMPLATE.replace("{{MESSAGE}}", message)
+        .replace("{{VOICE_OPTIONS}}", VOICE_OPTIONS)
+    )
 
 
 def slugify(text: str, max_len: int = 50) -> str:
@@ -253,7 +165,7 @@ class ReederHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
         
         if path == "/":
-            self.send_html(HTML_FORM.format(message=""))
+            self.send_html(render_form(""))
         
         elif path == "/add":
             url = params.get("url", [""])[0]
@@ -269,7 +181,7 @@ class ReederHandler(BaseHTTPRequestHandler):
                 # Check Accept header for response format
                 if "text/html" in self.headers.get("Accept", ""):
                     msg = f'<p class="success">✅ Queued: {filename}</p>'
-                    self.send_html(HTML_FORM.format(message=msg))
+                    self.send_html(render_form(msg))
                 else:
                     self.send_text(f"Queued: {filename}")
             except Exception as e:
@@ -310,7 +222,7 @@ class ReederHandler(BaseHTTPRequestHandler):
             host = self.headers.get("Host", "localhost:8081")
             scheme = "https" if "443" in host else "http"
             base_url = f"{scheme}://{host}"
-            content = BOOKMARKLET_PAGE.replace("REEDER_URL", base_url)
+            content = BOOKMARKLET_TEMPLATE.replace("{{REEDER_URL}}", base_url)
             self.send_html(content)
         
         else:
@@ -335,25 +247,25 @@ class ReederHandler(BaseHTTPRequestHandler):
         if job_type == "text":
             if not text:
                 msg = '<p class="error">❌ Error: Text is required</p>'
-                self.send_html(HTML_FORM.format(message=msg), 400)
+                self.send_html(render_form(msg), 400)
                 return
             if not title:
                 msg = '<p class="error">❌ Error: Title is required for text jobs</p>'
-                self.send_html(HTML_FORM.format(message=msg), 400)
+                self.send_html(render_form(msg), 400)
                 return
         else:
             if not url:
                 msg = '<p class="error">❌ Error: URL is required</p>'
-                self.send_html(HTML_FORM.format(message=msg), 400)
+                self.send_html(render_form(msg), 400)
                 return
         
         try:
             filename = create_job(url=url, title=title, voice=voice, text=text, job_type=job_type)
             msg = f'<p class="success">✅ Queued: {filename}</p>'
-            self.send_html(HTML_FORM.format(message=msg))
+            self.send_html(render_form(msg))
         except Exception as e:
             msg = f'<p class="error">❌ Error: {e}</p>'
-            self.send_html(HTML_FORM.format(message=msg), 500)
+            self.send_html(render_form(msg), 500)
 
 
 def main():

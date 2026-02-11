@@ -77,11 +77,6 @@ if [[ ! -f /usr/local/bin/uv ]]; then
     sudo chmod +x /usr/local/bin/uv
 fi
 
-# Install pocket-tts as a uv tool (for CLI access)
-echo ""
-echo "=== Installing pocket-tts ==="
-uv tool install pocket-tts || uv tool upgrade pocket-tts
-
 # Create reeder user if it doesn't exist
 echo ""
 echo "=== Setting up reeder user ==="
@@ -95,12 +90,14 @@ fi
 # Create directory structure
 echo ""
 echo "=== Creating directory structure ==="
-sudo mkdir -p "$INSTALL_DIR"/{inbox,processing,done,www/audio,voices,var,bin}
+sudo mkdir -p "$INSTALL_DIR"/{inbox,processing,done,www/audio,voices,var,bin,templates}
 sudo cp "$SCRIPT_DIR/bin/process-job" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/update-feed" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/submit-url" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/submit-text" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/reeder-status" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/templates/index.html" "$INSTALL_DIR/templates/"
+sudo cp "$SCRIPT_DIR/templates/bookmarklet.html" "$INSTALL_DIR/templates/"
 sudo chmod +x "$INSTALL_DIR/bin/"*
 
 # Copy pyproject.toml for uv
@@ -156,11 +153,6 @@ echo ""
 echo "2. Add a voice file:"
 echo "   sudo cp your-voice.wav $INSTALL_DIR/voices/default.wav"
 echo "   sudo chown reeder:reeder $INSTALL_DIR/voices/default.wav"
-echo ""
-echo "3. Convert voice to safetensors (faster loading, recommended):"
-echo "   # Note: Uses GitHub version of pocket-tts for safetensors support"
-echo "   sudo -u reeder uvx --from git+https://github.com/kyutai-labs/pocket-tts.git pocket-tts export-voice $INSTALL_DIR/voices/default.wav $INSTALL_DIR/voices/default.safetensors --truncate"
-echo "   # Then update config.toml: default_voice = \"default.safetensors\""
 echo ""
 echo "3. (Optional) Set up Caddy for HTTPS:"
 echo "   sudo cp $SCRIPT_DIR/Caddyfile /etc/caddy/Caddyfile"

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reeder</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #ffffff;
+            --text: #111111;
+            --muted: #666666;
+            --border: #cccccc;
+            --card: #f5f5f5;
+            --tab-active: #ffffff;
+            --success: #0a7a2f;
+            --error: #b00020;
+            --link: #0b57d0;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f1115;
+                --text: #e6e6e6;
+                --muted: #a0a0a0;
+                --border: #2a2f3a;
+                --card: #161a22;
+                --tab-active: #0f1115;
+                --success: #4bd37b;
+                --error: #ff6b6b;
+                --link: #6aa6ff;
+            }
+        }
+        body {
+            font-family: system-ui;
+            max-width: 500px;
+            margin: 2em auto;
+            padding: 1em;
+            background: var(--bg);
+            color: var(--text);
+        }
+        a { color: var(--link); }
+        input[type=url], input[type=text], select, textarea {
+            width: 100%;
+            padding: 0.5em;
+            margin: 0.5em 0;
+            box-sizing: border-box;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        textarea { min-height: 150px; font-family: inherit; }
+        button { padding: 0.75em 2em; font-size: 1em; }
+        .success { color: var(--success); }
+        .error { color: var(--error); }
+        label { font-size: 0.9em; color: var(--muted); }
+        .tabs { display: flex; gap: 0; margin-bottom: 1em; }
+        .tab {
+            padding: 0.5em 1em;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: var(--card);
+        }
+        .tab.active {
+            background: var(--tab-active);
+            border-bottom: 1px solid var(--tab-active);
+            margin-bottom: -1px;
+        }
+        .tab-content {
+            display: none;
+            padding: 1em;
+            border: 1px solid var(--border);
+            background: var(--tab-active);
+        }
+        .tab-content.active { display: block; }
+    </style>
+</head>
+<body>
+    <h1>📖 Reeder</h1>
+    {{MESSAGE}}
+    
+    <div class="tabs">
+        <div class="tab active" onclick="showTab('url')">URL</div>
+        <div class="tab" onclick="showTab('text')">Text</div>
+    </div>
+    
+    <div id="url-tab" class="tab-content active">
+        <form method="POST" action="/add">
+            <input type="hidden" name="type" value="url">
+            <input type="url" name="url" placeholder="https://example.com/article" required>
+            <input type="text" name="title" placeholder="Title (optional)">
+            <label for="voice-url">Voice</label>
+            <select name="voice" id="voice-url">
+{{VOICE_OPTIONS}}
+            </select>
+            <button type="submit">Add to Queue</button>
+        </form>
+    </div>
+    
+    <div id="text-tab" class="tab-content">
+        <form method="POST" action="/add">
+            <input type="hidden" name="type" value="text">
+            <input type="text" name="title" placeholder="Title" required>
+            <textarea name="text" placeholder="Paste or type your text here..." required></textarea>
+            <label for="voice-text">Voice</label>
+            <select name="voice" id="voice-text">
+{{VOICE_OPTIONS}}
+            </select>
+            <button type="submit">Add to Queue</button>
+        </form>
+    </div>
+    
+    <script>
+    function showTab(tab) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelector('.tab:nth-child(' + (tab === 'url' ? '1' : '2') + ')').classList.add('active');
+        document.getElementById(tab + '-tab').classList.add('active');
+    }
+    </script>
+    
+    <hr>
+    <p>📡 <a href="/feed.xml">RSS Feed</a> | 🎧 <a href="/audio/">Audio Files</a></p>
+    <p><small><a href="/status">Status</a> | <a href="/bookmarklet">Bookmarklet</a></small></p>
+</body>
+</html>

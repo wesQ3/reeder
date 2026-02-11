@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reeder Bookmarklet</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #ffffff;
+            --text: #111111;
+            --muted: #666666;
+            --border: #cccccc;
+            --card: #f0f0f0;
+            --link: #0b57d0;
+            --bookmark: #0b57d0;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f1115;
+                --text: #e6e6e6;
+                --muted: #a0a0a0;
+                --border: #2a2f3a;
+                --card: #161a22;
+                --link: #6aa6ff;
+                --bookmark: #6aa6ff;
+            }
+        }
+        body {
+            font-family: system-ui;
+            max-width: 600px;
+            margin: 2em auto;
+            padding: 1em;
+            background: var(--bg);
+            color: var(--text);
+        }
+        a { color: var(--link); }
+        code { background: var(--card); padding: 0.2em 0.5em; }
+        pre { background: var(--card); padding: 1em; overflow-x: auto; }
+        a.bookmarklet {
+            display: inline-block; padding: 0.5em 1em;
+            background: var(--bookmark); color: #ffffff; text-decoration: none;
+            border-radius: 4px; margin: 1em 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>📖 Reeder Bookmarklet</h1>
+    
+    <h2>Desktop Browser</h2>
+    <p>Drag this to your bookmarks bar:</p>
+    <p><a class="bookmarklet" href="javascript:(function(){window.location='{{REEDER_URL}}/add?url='+encodeURIComponent(window.location.href)+'&title='+encodeURIComponent(document.title)})();">📖 Read Later</a></p>
+    
+    <h2>iOS Shortcut</h2>
+    <p>Create a shortcut with these actions:</p>
+    <ol>
+        <li>Accept <strong>URLs</strong> from Share Sheet</li>
+        <li><strong>Get Contents of URL</strong>: <code>{{REEDER_URL}}/add?url=[Shortcut Input]</code></li>
+        <li><strong>Show Result</strong></li>
+    </ol>
+    
+    <h2>Manual URL</h2>
+    <pre>{{REEDER_URL}}/add?url=YOUR_URL&title=OPTIONAL_TITLE</pre>
+    
+    <p><a href="/">← Back</a></p>
+</body>
+</html>
