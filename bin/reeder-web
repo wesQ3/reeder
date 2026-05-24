@@ -12,50 +12,35 @@ Endpoints:
 import json
 import os
 import re
-import tomllib
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from reeder.config import load_config as _load_config, get_paths as _get_paths
+
 
 def load_config():
-    """Load config to find paths."""
-    config_path = os.environ.get("REEDER_CONFIG")
-    if config_path:
-        candidates = [Path(config_path)]
-    else:
-        script_dir = Path(__file__).parent
-        candidates = [
-            script_dir.parent / "config.toml",
-            script_dir.parent / "config.dev.toml",
-            Path("/etc/reeder/config.toml"),
-            Path.home() / ".config/reeder/config.toml",
-        ]
-    
-    for candidate in candidates:
-        if candidate.exists():
-            with open(candidate, "rb") as f:
-                cfg = tomllib.load(f)
-            base = Path(cfg["paths"]["base_dir"])
-            if not base.is_absolute():
-                base = candidate.parent / base
-            return {
-                "inbox": base / cfg["paths"]["inbox"],
-                "processing": base / cfg["paths"]["processing"],
-                "done": base / cfg["paths"]["done"],
-                "status_file": base / cfg["paths"]["status_file"],
-                "voices": base / cfg["paths"]["voices"],
-            }
-    
-    base = Path("/var/lib/reeder")
-    return {
-        "inbox": base / "inbox",
-        "processing": base / "processing", 
-        "done": base / "done",
-        "status_file": base / "var/status.txt",
-        "voices": base / "voices",
-    }
+    """Load config and return paths dict for the web server."""
+    try:
+        config = _load_config()
+        paths = _get_paths(config)
+        return {
+            "inbox": paths["inbox"],
+            "processing": paths["processing"],
+            "done": paths["done"],
+            "status_file": paths["status"],
+            "voices": paths["voices"],
+        }
+    except FileNotFoundError:
+        base = Path("/var/lib/reeder")
+        return {
+            "inbox": base / "inbox",
+            "processing": base / "processing",
+            "done": base / "done",
+            "status_file": base / "var/status.txt",
+            "voices": base / "voices",
+        }
 
 
 def enumerate_voices():

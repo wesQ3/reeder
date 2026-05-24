@@ -15,6 +15,7 @@ status_file = "var/status.txt"
 
 [tts]
 default_voice = "default.safetensors"
+model = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 temperature = 0.8
 device = "cpu"
 audio_format = "opus"
