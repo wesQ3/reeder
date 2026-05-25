@@ -5,6 +5,17 @@ import tomllib
 from pathlib import Path
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override values into base config."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: Path | None = None) -> dict:
     """Load configuration from config.toml.
 
@@ -31,6 +42,12 @@ def load_config(config_path: Path | None = None) -> dict:
     config_path = config_path.resolve()
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
+
+    override_path = config_path.with_name(f"{config_path.stem}.override{config_path.suffix}")
+    if override_path.exists():
+        with open(override_path, "rb") as f:
+            override = tomllib.load(f)
+        config = _deep_merge(config, override)
 
     config["_config_path"] = config_path
     return config

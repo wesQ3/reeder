@@ -37,7 +37,8 @@ from pathlib import Path
 from reeder.config import get_paths, load_config
 from reeder.extract import extract_text
 from reeder.feed import update_feed
-from reeder.tts import convert_audio, generate_audio
+from reeder.tts import convert_audio
+from reeder.tts_remote import generate_audio_with_fallback
 
 # Suppress noisy transformers warnings about pad_token_id
 logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)
@@ -100,7 +101,7 @@ def process_job(job_path: Path, config: dict, paths: dict):
         write_status(paths, f"Generating audio: {job_name}")
         with tempfile.TemporaryDirectory() as tmpdir:
             wav_path = Path(tmpdir) / "output.wav"
-            generate_audio(
+            backend = generate_audio_with_fallback(
                 text, wav_path, job, config, paths,
                 status_callback=lambda msg: write_status(paths, msg),
             )
@@ -122,6 +123,7 @@ def process_job(job_path: Path, config: dict, paths: dict):
             "duration_seconds": duration,
             "guid": job_name,
             "tts_model": config["tts"].get("model", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+            "backend": backend,
         }
 
         print(f"\n{'='*60}")

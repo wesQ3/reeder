@@ -25,6 +25,8 @@ package() {
     # Install Python project files
     install -Dm644 pyproject.toml "$pkgdir/usr/lib/reeder/pyproject.toml"
     install -Dm644 uv.lock "$pkgdir/usr/lib/reeder/uv.lock"
+    install -Dm644 README.md "$pkgdir/usr/lib/reeder/README.md"
+    cp -a reeder "$pkgdir/usr/lib/reeder/"
 
     # Install HTML templates
     install -Dm644 templates/index.html "$pkgdir/usr/lib/reeder/templates/index.html"

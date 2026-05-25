@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Reeder Web - Simple HTTP endpoint for submitting jobs.
 
@@ -12,10 +13,16 @@ Endpoints:
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# Allow importing the local reeder package from /usr/lib/reeder.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from reeder.config import load_config as _load_config, get_paths as _get_paths
 

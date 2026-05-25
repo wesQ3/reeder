@@ -35,6 +35,12 @@ opus_bitrate = 48
 # MP3 encoding bitrate (kbps) 
 mp3_bitrate = 64
 
+[tts.remote]
+# Remote GPU worker (enable in local override if used)
+enabled = false
+url = "http://localhost:8100"
+timeout = 300
+
 [feed]
 # RSS feed metadata
 title = "Reeder"

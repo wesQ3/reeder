@@ -22,6 +22,12 @@ audio_format = "opus"
 opus_bitrate = 48
 mp3_bitrate = 64
 
+[tts.remote]
+# Remote GPU worker (disabled for local dev)
+enabled = false
+url = "http://localhost:8100"
+timeout = 300
+
 [feed]
 title = "Reeder (Dev)"
 description = "Articles converted to audio"

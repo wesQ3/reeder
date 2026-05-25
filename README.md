@@ -88,6 +88,14 @@ Edit `/var/lib/reeder/config.toml`:
 - **audio_format**: `opus` (smaller) or `mp3` (more compatible)
 - **temperature**: TTS expressiveness (0.0-1.0)
 
+Local machine/network settings should go in an override file, not `config.toml`.
+
+- Base config: `config.toml` (tracked)
+- Local overrides: `config.override.toml` (ignored)
+- Example template: `config.override.toml.example`
+
+At runtime, `config.override.toml` is merged over `config.toml` automatically.
+
 ## RSS Feed
 
 Subscribe to `https://your-hostname/feed.xml` in any podcast app:

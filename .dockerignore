@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+pocket-tts/
+inbox/
+processing/
+done/
+www/
+var/
+*.pkg.tar.zst
+.env
+config.toml
+config.dev.toml

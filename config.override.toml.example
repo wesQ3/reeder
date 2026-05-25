@@ -1,0 +1,10 @@
+# Local override values (not committed): copy to config.override.toml
+
+[tts.remote]
+enabled = true
+url = "http://your-remote-worker-host:8100"
+timeout = 300
+
+[feed]
+# Keep your local deployment URL out of tracked config.toml.
+base_url = "https://your-hostname.example"

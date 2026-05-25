@@ -21,3 +21,5 @@ src/
 
 # Local environment overrides
 .envrc.local
+config.override.toml
+config.dev.override.toml

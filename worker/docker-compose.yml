@@ -1,0 +1,26 @@
+services:
+  tts-worker:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    container_name: reeder-tts-worker
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    volumes:
+      - ${VOICES_DIR:-./voices}:/data/voices:ro
+      - huggingface-cache:/root/.cache/huggingface
+    environment:
+      - TTS_MODEL=${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-Base}
+      - TTS_DEVICE=${TTS_DEVICE:-cuda}
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  huggingface-cache:
