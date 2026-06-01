@@ -4,6 +4,14 @@
 enabled = true
 url = "http://your-remote-worker-host:8100"
 timeout = 300
+wake_enabled = false
+wake_mac = "aa:bb:cc:dd:ee:ff"
+wake_broadcast = "255.255.255.255"
+wake_port = 9
+wake_retries = 5
+wake_retry_interval = 1.0
+wake_wait = 60
+wake_poll_interval = 3
 
 [feed]
 # Keep your local deployment URL out of tracked config.toml.
