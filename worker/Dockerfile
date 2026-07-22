@@ -20,6 +20,7 @@ COPY worker/pyproject.toml ./pyproject.toml
 RUN uv sync --no-install-project --no-dev
 
 # Now copy application code (small, changes frequently)
+COPY reeder/ ./reeder/
 COPY worker/tts_api.py ./
 
 # Voice files mounted at /data/voices
