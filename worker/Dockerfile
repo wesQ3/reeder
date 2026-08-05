@@ -14,6 +14,7 @@ WORKDIR /app
 
 # Copy only pyproject.toml first — deps layer cached until deps change
 COPY worker/pyproject.toml ./pyproject.toml
+COPY worker/uv.lock ./uv.lock
 
 # Install dependencies WITHOUT the project itself (heavy layer: torch+CUDA ~7GB)
 # This layer is cached as long as pyproject.toml doesn't change.
