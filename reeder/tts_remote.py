@@ -51,21 +51,27 @@ def wake_remote_if_configured(
     remote_config: dict,
     status: Callable[[str], None],
 ) -> bool:
-    """Attempt to wake the remote host and wait for worker health."""
-    if not remote_config.get("wake_enabled", False):
+    """Attempt to wake the remote host and wait for worker health.
+
+    Wake-on-LAN is EXPERIMENTAL and gated behind [tts.remote.wake] enabled.
+    It is known not to work on all networks/hardware; leave disabled unless
+    you have verified magic packets reach the target host.
+    """
+    wake_config = remote_config.get("wake", {})
+    if not wake_config.get("enabled", False):
         return False
 
-    wake_mac = remote_config.get("wake_mac", "").strip()
+    wake_mac = wake_config.get("mac", "").strip()
     if not wake_mac:
-        status("Wake is enabled but wake_mac is missing; skipping wake")
+        status("Wake is enabled but wake.mac is missing; skipping wake")
         return False
 
-    wake_broadcast = remote_config.get("wake_broadcast", "255.255.255.255")
-    wake_port = int(remote_config.get("wake_port", 9))
-    wake_retries = int(remote_config.get("wake_retries", 5))
-    wake_interval = float(remote_config.get("wake_retry_interval", 1.0))
-    wake_wait = float(remote_config.get("wake_wait", 60))
-    wake_poll = float(remote_config.get("wake_poll_interval", 3))
+    wake_broadcast = wake_config.get("broadcast", "255.255.255.255")
+    wake_port = int(wake_config.get("port", 9))
+    wake_retries = int(wake_config.get("retries", 5))
+    wake_interval = float(wake_config.get("retry_interval", 1.0))
+    wake_wait = float(wake_config.get("wait", 60))
+    wake_poll = float(wake_config.get("poll_interval", 3))
 
     status(f"Sending WoWLAN magic packet to {wake_mac} via {wake_broadcast}:{wake_port}")
     send_wowlan_magic_packet(
@@ -120,6 +126,8 @@ def generate_audio_remote(
     if not check_remote_health(url):
         status("Remote worker unreachable")
         woke = wake_remote_if_configured(url, remote_config, status)
+        if not woke and remote_config.get("wake", {}).get("enabled", False):
+            status("Experimental wake did not bring the worker online")
         if not woke and not check_remote_health(url):
             status("Falling back to local")
             return False

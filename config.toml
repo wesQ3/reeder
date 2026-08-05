@@ -40,14 +40,17 @@ mp3_bitrate = 64
 enabled = false
 url = "http://localhost:8100"
 timeout = 300
-wake_enabled = false
-wake_mac = ""
-wake_broadcast = "255.255.255.255"
-wake_port = 9
-wake_retries = 5
-wake_retry_interval = 1.0
-wake_wait = 60
-wake_poll_interval = 3
+# Wake-on-LAN: EXPERIMENTAL — does not work on all networks/hardware.
+# Disabled by default; enable only after verifying magic packets reach the host.
+[tts.remote.wake]
+enabled = false
+mac = ""
+broadcast = "255.255.255.255"
+port = 9
+retries = 5
+retry_interval = 1.0
+wait = 60
+poll_interval = 3
 
 [feed]
 # RSS feed metadata
