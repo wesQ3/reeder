@@ -1,38 +1,36 @@
-FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
+FROM ghcr.io/0xshug0/audio.cpp:full-cuda12
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ffmpeg \
-    sox \
-    && rm -rf /var/lib/apt/lists/*
+USER root
 
-# Install uv
+# Install uv for fast Python dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
+ENV PATH="/app:$PATH"
 
-# Copy only pyproject.toml first — deps layer cached until deps change
-COPY worker/pyproject.toml ./pyproject.toml
-COPY worker/uv.lock ./uv.lock
+# Copy dependency manifests first for caching
+COPY pyproject.toml uv.lock ./
 
-# Install dependencies WITHOUT the project itself (heavy layer: torch+CUDA ~7GB)
-# This layer is cached as long as pyproject.toml doesn't change.
+# Install Python dependencies without virtual environment overhead
 RUN uv sync --no-install-project --no-dev
 
-# Now copy application code (small, changes frequently)
-COPY reeder/ ./reeder/
-COPY worker/tts_api.py ./
+# Copy application configuration and source code
+COPY server.json run.sh tts_api.py ./
+RUN chmod +x /app/run.sh
 
-# Voice files mounted at /data/voices
+# Voice files and GGUF models mounted as volumes
 VOLUME /data/voices
+VOLUME /models
 
-# HuggingFace cache for model weights
-VOLUME /root/.cache/huggingface
+# 8100: Reeder compatibility gateway
+# 8080: audio.cpp native server & Arena WebUI
+EXPOSE 8100 8080
 
-EXPOSE 8100
+ENV ACTIVE_TTS_MODEL="qwen3-tts"
+ENV AUDIOCPP_BACKEND="cuda"
+ENV AUDIOCPP_URL="http://127.0.0.1:8080"
+ENV VOICES_DIR="/data/voices"
+ENV MODELS_DIR="/models"
+ENV SERVER_CONFIG_PATH="/app/server.json"
 
-ENV TTS_MODEL="Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-ENV TTS_DEVICE="cuda"
-
-CMD ["sh", "-c", "uv run python tts_api.py --model \"$TTS_MODEL\" --device \"$TTS_DEVICE\" --host 0.0.0.0 --port 8100"]
+ENTRYPOINT ["/app/run.sh"]

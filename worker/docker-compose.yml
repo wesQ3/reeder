@@ -1,18 +1,19 @@
 services:
   tts-worker:
     build:
-      context: ..
-      dockerfile: worker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     container_name: reeder-tts-worker
     restart: unless-stopped
     ports:
-      - "8100:8100"
+      - "8100:8100"       # Reeder compatibility endpoint
+      - "8080:8080"       # audio.cpp WebUI / Arena
     volumes:
-      - ${VOICES_DIR:-./voices}:/data/voices:ro
-      - huggingface-cache:/root/.cache/huggingface
+      - ${VOICES_DIR:-../voices}:/data/voices:ro
+      - ${MODELS_DIR:-./models}:/models
     environment:
-      - TTS_MODEL=${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-Base}
-      - TTS_DEVICE=${TTS_DEVICE:-cuda}
+      - ACTIVE_TTS_MODEL=${ACTIVE_TTS_MODEL:-qwen3-tts}
+      - AUDIOCPP_BACKEND=${AUDIOCPP_BACKEND:-cuda}
       - NVIDIA_VISIBLE_DEVICES=all
     deploy:
       resources:
@@ -21,6 +22,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-volumes:
-  huggingface-cache:
