@@ -1,150 +1,290 @@
-"""Reeder TTS Worker — GPU-accelerated Qwen3-TTS API.
+"""Reeder TTS Worker — audio.cpp Compatibility Gateway.
 
-Provides a FastAPI server that generates voice-cloned audio using CUDA.
-Designed to run on a GPU-equipped machine, called by the main reeder
-service on nuc0.
+Provides a FastAPI server that translates Reeder's TTS worker protocol
+to audio.cpp's OpenAI-compatible speech API (/v1/audio/speech).
+Enables running multiple GGUF-based TTS models (Qwen3-TTS, PocketTTS,
+Kokoro, Supertonic, etc.) with high performance and zero changes to the
+main Reeder service.
 """
 
+import argparse
+import io
+import json
 import logging
-import tempfile
+import os
 import time
 import wave
 from pathlib import Path
+from typing import Any, Optional
 
-import torch
+import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
-from reeder.tts import generate_audio, get_tts_model, split_text_into_chunks
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("reeder-audiocpp-gateway")
 
 app = FastAPI(
-    title="Reeder TTS Worker",
-    description="GPU-accelerated TTS generation via Qwen3-TTS",
-    version="0.1.0",
+    title="Reeder audio.cpp Compatibility Gateway",
+    description="Translates Reeder TTS requests to native audio.cpp C++ inference",
+    version="0.2.0",
 )
 
-# Global model state
-_model_loaded: bool = False
-_model_name: str = ""
-_device: str = "cuda"
+# Global Configuration & State
+AUDIOCPP_URL: str = os.getenv("AUDIOCPP_URL", "http://127.0.0.1:8080").rstrip("/")
+ACTIVE_TTS_MODEL: str = os.getenv("ACTIVE_TTS_MODEL", "qwen3-tts")
+AUDIOCPP_BACKEND: str = os.getenv("AUDIOCPP_BACKEND", "audio.cpp (cuda)")
+DEVICE: str = os.getenv("TTS_DEVICE", "cuda:0")
+VOICES_DIR: Path = Path(os.getenv("VOICES_DIR", "/data/voices"))
+SERVER_CONFIG_PATH: Path = Path(os.getenv("SERVER_CONFIG_PATH", "/app/server.json"))
 
 
-def load_model(model_name: str, device: str = "cuda"):
-    """Load the Qwen3-TTS model."""
-    global _model_loaded, _model_name, _device
-    _device = device
-    _model_name = model_name
-
-    logger.info(f"Loading model: {model_name} on {device}")
-    get_tts_model(model_name, device)
-    _model_loaded = True
-    logger.info("Model loaded successfully")
+def load_configured_models() -> list[str]:
+    """Read configured model IDs from server.json if available."""
+    default_models = [ACTIVE_TTS_MODEL]
+    config_paths = [
+        SERVER_CONFIG_PATH,
+        Path(__file__).parent / "server.json",
+        Path("server.json"),
+    ]
+    for p in config_paths:
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                models = [m.get("id") for m in data.get("models", []) if m.get("id")]
+                if models:
+                    return models
+            except Exception as e:
+                logger.warning(f"Could not read models from {p}: {e}")
+    return default_models
 
 
 class GenerateRequest(BaseModel):
-    """Request body for /generate endpoint."""
+    """Request body for /generate endpoint matching Reeder contract."""
     text: str = Field(..., description="Text to synthesize")
-    voice: str = Field(default="default", description="Voice name (maps to voices dir)")
+    voice: str = Field(default="default", description="Voice name (maps to voices dir or preset)")
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     language: str = Field(default="Auto")
     max_tokens_per_chunk: int = Field(default=100, ge=10, le=500)
 
 
-class GenerateResponse(BaseModel):
-    """Response metadata for /generate endpoint."""
-    duration_seconds: float
-    sample_rate: int
-    chunks_generated: int
-    generation_time_seconds: float
-    rtf: float
-
-
 class HealthResponse(BaseModel):
-    model: str
-    device: str
+    """Health check response maintaining backward compatibility."""
     status: str
-    gpu_memory_used_mb: int | None = None
-    gpu_memory_total_mb: int | None = None
+    model: str
+    backend: str = "audio.cpp (cuda)"
+    device: str = "cuda:0"
+    active_model: str
+    available_models: list[str] = Field(default_factory=list)
+    gpu_memory_used_mb: Optional[int] = None
+    gpu_memory_total_mb: Optional[int] = None
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Health check — confirms model is loaded and GPU is available."""
-    gpu_used = None
-    gpu_total = None
-    if torch.cuda.is_available():
-        gpu_used = int(torch.cuda.memory_allocated() / 1024 / 1024)
-        gpu_total = int(torch.cuda.get_device_properties(0).total_memory / 1024 / 1024)
+    """Health check — verifies audio.cpp backend is online and models are loaded/available."""
+    available_models = load_configured_models()
+    audiocpp_online = False
+    models_from_api: list[str] = []
+
+    # Check audio.cpp health endpoint
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{AUDIOCPP_URL}/health")
+            if resp.status_code == 200:
+                audiocpp_online = True
+        except Exception as e:
+            logger.debug(f"audio.cpp /health not reachable: {e}")
+
+        # Try to query /v1/models if available
+        try:
+            resp_models = await client.get(f"{AUDIOCPP_URL}/v1/models")
+            if resp_models.status_code == 200:
+                audiocpp_online = True
+                data = resp_models.json()
+                for item in data.get("data", []):
+                    m_id = item.get("id")
+                    if m_id and m_id not in models_from_api:
+                        models_from_api.append(m_id)
+        except Exception as e:
+            logger.debug(f"audio.cpp /v1/models query failed: {e}")
+
+    if models_from_api:
+        available_models = models_from_api
+
+    if not audiocpp_online:
+        logger.warning(f"audio.cpp server unreachable at {AUDIOCPP_URL}")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "error": f"audio.cpp server unreachable at {AUDIOCPP_URL}",
+                "model": ACTIVE_TTS_MODEL,
+                "backend": AUDIOCPP_BACKEND,
+                "device": DEVICE,
+                "active_model": ACTIVE_TTS_MODEL,
+                "available_models": available_models,
+            },
+        )
 
     return HealthResponse(
-        model=_model_name,
-        device=_device,
-        status="ready" if _model_loaded else "not_loaded",
-        gpu_memory_used_mb=gpu_used,
-        gpu_memory_total_mb=gpu_total,
+        status="ready",
+        model=ACTIVE_TTS_MODEL,
+        backend=AUDIOCPP_BACKEND,
+        device=DEVICE,
+        active_model=ACTIVE_TTS_MODEL,
+        available_models=available_models,
     )
+
+
+def resolve_voice_and_model(
+    voice: str,
+    requested_language: str = "Auto",
+) -> tuple[str, dict[str, Any]]:
+    """Resolve requested voice name to model ID and audio.cpp payload parameters.
+
+    Supports:
+    1. Voice alias metadata JSON (/data/voices/<voice>.json)
+    2. Voice cloning WAV + transcript (/data/voices/<voice>.wav + .txt)
+    3. Preset speaker voices (e.g. Kokoro preset names)
+    4. Default fallback resolution
+    """
+    clean_voice = Path(voice).stem if not Path(voice).is_absolute() else Path(voice).stem
+    target_model = ACTIVE_TTS_MODEL
+    extra_params: dict[str, Any] = {}
+
+    # Check for JSON metadata alias first (e.g. kokoro-bella.json)
+    json_path = VOICES_DIR / f"{clean_voice}.json"
+    if json_path.is_file():
+        try:
+            alias_data = json.loads(json_path.read_text(encoding="utf-8"))
+            if "model" in alias_data:
+                target_model = alias_data["model"]
+
+            # Speaker preset ID
+            voice_id = alias_data.get("voice_id") or alias_data.get("voice") or alias_data.get("speaker")
+            if voice_id:
+                extra_params["voice"] = voice_id
+
+            # Voice ref audio for cloning models
+            voice_ref = alias_data.get("voice_ref") or alias_data.get("ref_audio")
+            if voice_ref:
+                extra_params["voice_ref"] = str(voice_ref)
+
+            # Reference transcript
+            ref_text = alias_data.get("reference_text") or alias_data.get("ref_text")
+            if ref_text:
+                extra_params["reference_text"] = ref_text
+
+            if "language" in alias_data:
+                extra_params["language"] = alias_data["language"]
+
+            logger.info(f"Resolved voice alias '{voice}' from {json_path} -> model={target_model}")
+            return target_model, extra_params
+        except Exception as e:
+            logger.warning(f"Error reading voice alias {json_path}: {e}")
+
+    # Check for direct WAV voice sample for cloning
+    wav_path = VOICES_DIR / f"{clean_voice}.wav"
+    if not wav_path.is_file() and clean_voice == "default":
+        # Look for default.wav or any .wav in voices directory
+        wav_files = sorted(VOICES_DIR.glob("*.wav"))
+        if wav_files:
+            wav_path = wav_files[0]
+            clean_voice = wav_path.stem
+            logger.info(f"Default voice using first available sample: {wav_path.name}")
+
+    if wav_path.is_file():
+        extra_params["voice_ref"] = str(wav_path)
+        txt_path = wav_path.with_suffix(".txt")
+        if txt_path.is_file():
+            extra_params["reference_text"] = txt_path.read_text(encoding="utf-8").strip()
+        else:
+            logger.warning(f"Voice transcript not found at {txt_path}; proceed without reference_text")
+        return target_model, extra_params
+
+    # If voice looks like a preset identifier (e.g. af_bella, am_adam) or model doesn't require audio cloning
+    if "kokoro" in target_model.lower() or "supertonic" in target_model.lower():
+        # Pass voice name as preset speaker ID
+        extra_params["voice"] = clean_voice if clean_voice != "default" else "af_bella"
+        return target_model, extra_params
+
+    # If neither wav nor json was found and target model is cloning-based
+    if clean_voice != "default":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Voice '{voice}' not found in {VOICES_DIR} (expected {wav_path.name} or {json_path.name})",
+        )
+
+    # Fallback for default when no wav files exist
+    logger.warning(f"No voice files found in {VOICES_DIR} for '{voice}', delegating to model default")
+    return target_model, extra_params
 
 
 @app.post("/generate")
 async def generate(request: GenerateRequest):
-    """Generate voice-cloned audio from text.
-
-    Returns the audio as a WAV file response with metadata headers.
-    """
-    from fastapi.responses import Response
-
-    tts = get_tts_model(_model_name, _device)
+    """Generate audio via audio.cpp native server and stream back WAV with metadata headers."""
     start_time = time.monotonic()
-    tokenizer = tts.processor.tokenizer
-    chunks = split_text_into_chunks(request.text, tokenizer, max_tokens=request.max_tokens_per_chunk)
-    total_chunks = len(chunks)
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    target_model, voice_params = resolve_voice_and_model(request.voice, request.language)
+
+    # Build audio.cpp /v1/audio/speech payload
+    payload: dict[str, Any] = {
+        "model": target_model,
+        "input": text,
+        "response_format": "wav",
+        "temperature": request.temperature,
+    }
+    payload.update(voice_params)
+
+    if request.language and request.language.lower() != "auto" and "language" not in payload:
+        payload["language"] = request.language
+
     logger.info(
-        f"Generating: {len(request.text)} chars, voice={request.voice}, "
-        f"temp={request.temperature}, chunks={total_chunks}"
+        f"Forwarding to audio.cpp: {len(text)} chars, model={target_model}, "
+        f"voice={request.voice}, temp={request.temperature}"
     )
 
-    # Reuse shared inference path from reeder.tts to keep behavior consistent.
-    config = {
-        "tts": {
-            "default_voice": "default.safetensors",
-            "model": _model_name,
-            "device": _device,
-            "temperature": request.temperature,
-            "max_tokens_per_chunk": request.max_tokens_per_chunk,
-        }
-    }
-    paths = {"voices": Path("/data/voices")}
-    job = {
-        "voice": request.voice,
-        "temperature": request.temperature,
-        "language": request.language,
-        "title": "remote-request",
-    }
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
+    # Dispatch request to audio.cpp
+    async with httpx.AsyncClient(timeout=300.0) as client:
         try:
-            generate_audio(request.text, tmp_path, job, config, paths)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            resp = await client.post(f"{AUDIOCPP_URL}/v1/audio/speech", json=payload)
+        except httpx.RequestError as exc:
+            logger.error(f"Failed to communicate with audio.cpp server at {AUDIOCPP_URL}: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to communicate with audio.cpp backend: {exc}",
+            ) from exc
 
-        with wave.open(str(tmp_path), "rb") as wav_file:
-            sample_rate = wav_file.getframerate()
-            frame_count = wav_file.getnframes()
-        duration = frame_count / sample_rate if sample_rate > 0 else 0.0
-        generation_time = time.monotonic() - start_time
-        rtf = generation_time / duration if duration > 0 else 0.0
+    if resp.status_code != 200:
+        logger.error(f"audio.cpp returned error {resp.status_code}: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"audio.cpp generation error: {resp.text}",
+        )
 
-        logger.info(f"  Done: {duration:.1f}s audio in {generation_time:.1f}s (RTF={rtf:.2f}x)")
-        wav_bytes = tmp_path.read_bytes()
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+    wav_bytes = resp.content
+
+    # Inspect WAV header to compute duration and sample rate
+    sample_rate = 24000
+    duration = 0.0
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            sample_rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            if sample_rate > 0:
+                duration = n_frames / sample_rate
+    except Exception as e:
+        logger.warning(f"Could not parse WAV headers from audio.cpp response: {e}")
+
+    generation_time = time.monotonic() - start_time
+    rtf = generation_time / duration if duration > 0 else 0.0
+
+    logger.info(f"Done: {duration:.2f}s audio generated in {generation_time:.2f}s (RTF={rtf:.3f}x)")
 
     return Response(
         content=wav_bytes,
@@ -152,7 +292,7 @@ async def generate(request: GenerateRequest):
         headers={
             "X-Duration-Seconds": f"{duration:.2f}",
             "X-Sample-Rate": str(sample_rate),
-            "X-Chunks-Generated": str(total_chunks),
+            "X-Chunks-Generated": "1",
             "X-Generation-Time": f"{generation_time:.2f}",
             "X-RTF": f"{rtf:.3f}",
         },
@@ -160,18 +300,27 @@ async def generate(request: GenerateRequest):
 
 
 def main():
-    """Entry point for the worker server."""
-    import argparse
+    """CLI entry point for the worker gateway server."""
+    global AUDIOCPP_URL, ACTIVE_TTS_MODEL, DEVICE, VOICES_DIR
 
-    parser = argparse.ArgumentParser(description="Reeder TTS Worker")
-    parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-                        help="HuggingFace model ID or local path")
-    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8100)
+    parser = argparse.ArgumentParser(description="Reeder audio.cpp Compatibility Gateway")
+    parser.add_argument("--audiocpp-url", default=AUDIOCPP_URL, help="URL of audio.cpp server")
+    parser.add_argument("--model", default=ACTIVE_TTS_MODEL, help="Default active model ID")
+    parser.add_argument("--device", default=DEVICE, help="Target device (e.g. cuda:0)")
+    parser.add_argument("--voices-dir", default=str(VOICES_DIR), help="Path to voices directory")
+    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
+    parser.add_argument("--port", type=int, default=8100, help="Port to listen on")
     args = parser.parse_args()
 
-    load_model(args.model, args.device)
+    AUDIOCPP_URL = args.audiocpp_url.rstrip("/")
+    ACTIVE_TTS_MODEL = args.model
+    DEVICE = args.device
+    VOICES_DIR = Path(args.voices_dir)
+
+    logger.info(
+        f"Starting gateway on {args.host}:{args.port} -> audio.cpp at {AUDIOCPP_URL} "
+        f"(model: {ACTIVE_TTS_MODEL}, voices: {VOICES_DIR})"
+    )
     uvicorn.run(app, host=args.host, port=args.port)
 
 
