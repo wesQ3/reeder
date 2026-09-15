@@ -5,7 +5,10 @@ set -euo pipefail
 AUDIOCPP_CONFIG="${AUDIOCPP_CONFIG:-/app/server.json}"
 AUDIOCPP_HOST="${AUDIOCPP_HOST:-0.0.0.0}"
 AUDIOCPP_PORT="${AUDIOCPP_PORT:-8080}"
-AUDIOCPP_BIN="${AUDIOCPP_BIN:-audiocpp_server}"
+AUDIOCPP_BIN="${AUDIOCPP_BIN:-/app/audiocpp_server}"
+if [ ! -x "$AUDIOCPP_BIN" ] && command -v audiocpp_server >/dev/null 2>&1; then
+    AUDIOCPP_BIN="audiocpp_server"
+fi
 GATEWAY_HOST="${GATEWAY_HOST:-0.0.0.0}"
 GATEWAY_PORT="${GATEWAY_PORT:-8100}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-60}"
