@@ -5,12 +5,14 @@ services:
       dockerfile: Dockerfile
     container_name: reeder-tts-worker
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "8100:8100"       # Reeder compatibility endpoint
       - "8080:8080"       # audio.cpp WebUI / Arena
     volumes:
-      - ${VOICES_DIR:-../voices}:/data/voices:ro
-      - ${MODELS_DIR:-./models}:/models
+      - ${VOICES_DIR:-/var/lib/reeder/voices}:/data/voices:ro
+      - ${MODELS_DIR:-/var/lib/reeder/models}:/models
     environment:
       - ACTIVE_TTS_MODEL=${ACTIVE_TTS_MODEL:-qwen3-tts}
       - AUDIOCPP_BACKEND=${AUDIOCPP_BACKEND:-cuda}

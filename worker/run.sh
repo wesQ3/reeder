@@ -41,6 +41,7 @@ $AUDIOCPP_BIN \
     --config "$AUDIOCPP_CONFIG" \
     --host "$AUDIOCPP_HOST" \
     --port "$AUDIOCPP_PORT" \
+    --voice-dir /data/voices \
     --ui \
     --ui-management \
     ${AUDIOCPP_EXTRA_ARGS:-} &
