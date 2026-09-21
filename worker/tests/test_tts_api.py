@@ -91,7 +91,9 @@ class TestTTSApiGateway(unittest.TestCase):
         mock_client = AsyncMock()
         mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-        output_wav = create_dummy_wav(2.5, 24000)
+        # Calibrate response length to the seed history so the outlier
+        # detector doesn't retry: 5500 samples/token, text is 10 est. tokens.
+        output_wav = create_dummy_wav(5500 * 10 / 24000, 24000)
         mock_resp = MagicMock(status_code=200, content=output_wav)
         mock_client.post.return_value = mock_resp
 
@@ -101,15 +103,18 @@ class TestTTSApiGateway(unittest.TestCase):
             "temperature": 0.7,
             "language": "en",
         }
-        resp = self.client.post("/generate", json=payload)
+        with patch.object(tts_api, "SAMPLES_PER_TOKEN_SEED", [5400.0, 5500.0, 5600.0]):
+            resp = self.client.post("/generate", json=payload)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers["Content-Type"], "audio/wav")
         self.assertEqual(resp.headers["X-Sample-Rate"], "24000")
-        self.assertEqual(resp.headers["X-Duration-Seconds"], "2.50")
+        self.assertEqual(resp.headers["X-Duration-Seconds"], "2.29")
         self.assertIn("X-RTF", resp.headers)
         self.assertIn("X-Generation-Time", resp.headers)
         self.assertEqual(resp.headers["X-Chunks-Generated"], "1")
+        self.assertEqual(resp.headers["X-Retried-Chunks"], "0")
         self.assertEqual(resp.content, output_wav)
+        self.assertEqual(mock_client.post.call_count, 1)
 
         # Check call arguments
         mock_client.post.assert_called_once()
@@ -135,7 +140,9 @@ class TestTTSApiGateway(unittest.TestCase):
         mock_client = AsyncMock()
         mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-        output_wav = create_dummy_wav(1.0, 24000)
+        # "Testing Kokoro preset voice" is 7 estimated tokens -> 1.604s of
+        # audio looks statistically normal against this seed history.
+        output_wav = create_dummy_wav(5500 * 7 / 24000, 24000)
         mock_resp = MagicMock(status_code=200, content=output_wav)
         mock_client.post.return_value = mock_resp
 
@@ -144,8 +151,10 @@ class TestTTSApiGateway(unittest.TestCase):
             "voice": "kokoro-bella",
             "temperature": 0.8,
         }
-        resp = self.client.post("/generate", json=payload)
+        with patch.object(tts_api, "SAMPLES_PER_TOKEN_SEED", [5400.0, 5500.0, 5600.0]):
+            resp = self.client.post("/generate", json=payload)
         self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_client.post.call_count, 1)
 
         sent_payload = mock_client.post.call_args.kwargs["json"]
         self.assertEqual(sent_payload["model"], "kokoro-82m")
@@ -162,6 +171,124 @@ class TestTTSApiGateway(unittest.TestCase):
         resp = self.client.post("/generate", json=payload)
         self.assertEqual(resp.status_code, 404)
 
+
+    @patch("tts_api.httpx.AsyncClient")
+    def test_generate_chunks_long_text(self, mock_client_cls):
+        """Long text is split into multiple chunks that are synthesized and concatenated."""
+        sample_wav = self.voices_dir / "narrator.wav"
+        sample_wav.write_bytes(create_dummy_wav(0.5))
+        (self.voices_dir / "narrator.txt").write_text("Reference transcript.")
+
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        # Narrow seed history so "normal" responses are easy to calibrate:
+        # 5500 samples per (estimated) token at 24kHz.
+        seed = [5400.0, 5500.0, 5600.0]
+
+        long_text = " ".join(
+            f"Sentence number {i} contains enough words to span multiple token chunks."
+            for i in range(40)
+        )
+        with patch.object(tts_api, "SAMPLES_PER_TOKEN_SEED", seed):
+            chunks = tts_api.split_text_into_chunks(long_text, max_tokens=100)
+            num_chunks = len(chunks)
+            self.assertGreater(num_chunks, 1)
+
+            # Each chunk responds with audio sized to look statistically normal
+            expected_frames = 0
+            responses = []
+            for chunk in chunks:
+                frames = int(5500 * tts_api.estimate_tokens(chunk))
+                expected_frames += frames
+                responses.append(MagicMock(
+                    status_code=200,
+                    content=create_dummy_wav(frames / 24000.0, 24000),
+                ))
+            mock_client.post.side_effect = responses
+
+            resp = self.client.post("/generate", json={"text": long_text, "voice": "narrator"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(int(resp.headers["X-Chunks-Generated"]), num_chunks)
+        self.assertEqual(int(resp.headers["X-Retried-Chunks"]), 0)
+        self.assertEqual(mock_client.post.call_count, num_chunks)
+
+        # Every dispatched payload must carry a chunk-sized input, not the full text
+        for call in mock_client.post.call_args_list:
+            self.assertLess(len(call.kwargs["json"]["input"]), len(long_text))
+
+        # The returned WAV must contain the concatenated PCM of all chunks
+        with wave.open(io.BytesIO(resp.content), "rb") as wf:
+            self.assertEqual(wf.getframerate(), 24000)
+            self.assertEqual(wf.getnframes(), expected_frames)
+
+        # Short single-sentence text must remain a single chunk
+        mock_client.post.reset_mock()
+        mock_client.post.side_effect = None
+        # "One short sentence." is 5 estimated tokens -> 1.146s looks normal
+        mock_client.post.return_value = MagicMock(
+            status_code=200, content=create_dummy_wav(5500 * 5 / 24000, 24000)
+        )
+        with patch.object(tts_api, "SAMPLES_PER_TOKEN_SEED", seed):
+            resp = self.client.post("/generate", json={"text": "One short sentence.", "voice": "narrator"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["X-Chunks-Generated"], "1")
+        self.assertEqual(mock_client.post.call_count, 1)
+
+    @patch("tts_api.httpx.AsyncClient")
+    def test_generate_retries_runaway_chunk(self, mock_client_cls):
+        """Chunks whose audio length is a statistical outlier are regenerated."""
+        sample_wav = self.voices_dir / "narrator.wav"
+        sample_wav.write_bytes(create_dummy_wav(0.5))
+        (self.voices_dir / "narrator.txt").write_text("Reference transcript.")
+
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        seed = [5400.0, 5500.0, 5600.0]
+        text = "First chunk sentence. Second chunk sentence that is a bit longer here."
+        payload = {"text": text, "voice": "narrator", "max_tokens_per_chunk": 10}
+
+        with patch.object(tts_api, "SAMPLES_PER_TOKEN_SEED", seed):
+            chunks = tts_api.split_text_into_chunks(text, max_tokens=10)
+            self.assertGreaterEqual(len(chunks), 2)
+
+            def normal_resp(chunk):
+                frames = int(5500 * tts_api.estimate_tokens(chunk))
+                return MagicMock(status_code=200, content=create_dummy_wav(frames / 24000.0, 24000))
+
+            def runaway_resp(chunk):
+                frames = int(5500 * tts_api.estimate_tokens(chunk)) * 100
+                return MagicMock(status_code=200, content=create_dummy_wav(frames / 24000.0, 24000))
+
+            # Chunk 1 normal; chunk 2 runaway once, then normal
+            mock_client.post.side_effect = [
+                normal_resp(chunks[0]),
+                runaway_resp(chunks[1]),
+                normal_resp(chunks[1]),
+            ]
+
+            resp = self.client.post("/generate", json=payload)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(int(resp.headers["X-Chunks-Generated"]), len(chunks))
+        self.assertEqual(int(resp.headers["X-Retried-Chunks"]), 1)
+        self.assertEqual(mock_client.post.call_count, len(chunks) + 1)
+
+    def test_split_text_into_chunks(self):
+        """Chunk splitting respects token budget, sentences, and abbreviations."""
+        text = "Mr. Smith went to Washington. He arrived at 3 p.m. and spoke. " * 5
+        chunks = tts_api.split_text_into_chunks(text, max_tokens=20)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(tts_api.estimate_tokens(chunk), 20 + tts_api.estimate_tokens(" "))
+        # Short text is not split
+        self.assertEqual(tts_api.split_text_into_chunks("Hi there.", max_tokens=100), ["Hi there."])
+        # Clause fallback for long single sentences
+        long_sentence = "word " * 200
+        clause_chunks = tts_api.split_text_into_chunks(long_sentence.replace(" ", ", ", 10), max_tokens=10)
+        self.assertGreater(len(clause_chunks), 1)
 
     @patch("tts_api.httpx.AsyncClient")
     def test_reeder_tts_remote_integration(self, mock_client_cls):

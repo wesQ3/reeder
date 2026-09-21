@@ -19,6 +19,12 @@ services:
     environment:
       - ACTIVE_TTS_MODEL=${ACTIVE_TTS_MODEL:-qwen3-tts}
       - AUDIOCPP_BACKEND=${AUDIOCPP_BACKEND:-cuda}
+      # Chunking & runaway-generation detection tuning (all optional)
+      - CHARS_PER_TOKEN=${CHARS_PER_TOKEN:-4.0}
+      - OUTLIER_Z_LIMIT=${OUTLIER_Z_LIMIT:-3.0}
+      - MAX_ATTEMPTS_PER_CHUNK=${MAX_ATTEMPTS_PER_CHUNK:-3}
+      - CHUNK_HTTP_TIMEOUT=${CHUNK_HTTP_TIMEOUT:-300}
+      - SAMPLES_PER_TOKEN_SEED=${SAMPLES_PER_TOKEN_SEED:-}
       - NVIDIA_VISIBLE_DEVICES=all
     deploy:
       resources:

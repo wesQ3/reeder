@@ -12,6 +12,9 @@ import io
 import json
 import logging
 import os
+import re
+import statistics
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -38,6 +41,118 @@ AUDIOCPP_BACKEND: str = os.getenv("AUDIOCPP_BACKEND", "audio.cpp (cuda)")
 DEVICE: str = os.getenv("TTS_DEVICE", "cuda:0")
 VOICES_DIR: Path = Path(os.getenv("VOICES_DIR", "/data/voices"))
 SERVER_CONFIG_PATH: Path = Path(os.getenv("SERVER_CONFIG_PATH", "/app/server.json"))
+
+# Chunking & runaway-generation detection settings.
+# audio.cpp's qwen3_tts speech decoder allocates its CUDA graph sized to the
+# input, so long texts must be split into small chunks and synthesized
+# one at a time (the whole point of this worker).
+CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "4.0"))  # Qwen tokenizer ~4 chars/token (English)
+OUTLIER_Z_LIMIT = float(os.getenv("OUTLIER_Z_LIMIT", "3.0"))
+MAX_ATTEMPTS_PER_CHUNK = int(os.getenv("MAX_ATTEMPTS_PER_CHUNK", "3"))
+CHUNK_HTTP_TIMEOUT = float(os.getenv("CHUNK_HTTP_TIMEOUT", "300.0"))
+# Preseeded samples-per-estimated-token history from past runs (see reeder.tts).
+# Token counts here are estimates (chars/CHARS_PER_TOKEN), so recalibrate via
+# SAMPLES_PER_TOKEN_SEED="v1,v2,..." if the voice/model yields a different scale.
+_DEFAULT_SPT_SEED = "5110,4793,5234,5889,5130,5941,5877,5138,5607,6370,6260,6381,5894,5538,6027,5280"
+_seed_env = os.getenv("SAMPLES_PER_TOKEN_SEED", "").strip() or _DEFAULT_SPT_SEED
+SAMPLES_PER_TOKEN_SEED: list[float] = [float(v) for v in _seed_env.split(",") if v.strip()]
+if len(SAMPLES_PER_TOKEN_SEED) < 2:
+    # statistics.stdev needs at least two points for outlier detection to work
+    SAMPLES_PER_TOKEN_SEED = [float(v) for v in _DEFAULT_SPT_SEED.split(",")]
+
+# Common abbreviations that shouldn't trigger sentence splits
+_ABBREVIATIONS = [
+    (r"\bMr\.", "Mr\x00"), (r"\bMrs\.", "Mrs\x00"),
+    (r"\bMs\.", "Ms\x00"), (r"\bDr\.", "Dr\x00"),
+    (r"\bProf\.", "Prof\x00"), (r"\bSr\.", "Sr\x00"),
+    (r"\bJr\.", "Jr\x00"), (r"\bSt\.", "St\x00"),
+    (r"\bvs\.", "vs\x00"), (r"\betc\.", "etc\x00"),
+    (r"\be\.g\.", "eg\x00"), (r"\bi\.e\.", "ie\x00"),
+    (r"\bU\.S\.", "US\x00"), (r"\bU\.K\.", "UK\x00"),
+    (r"\bNo\.", "No\x00"), (r"\bCo\.", "Co\x00"),
+    (r"\bInc\.", "Inc\x00"), (r"\bLtd\.", "Ltd\x00"),
+    (r"\bCorp\.", "Corp\x00"),
+]
+
+
+def estimate_tokens(text: str) -> int:
+    """Approximate Qwen-style token count without loading a tokenizer."""
+    return max(1, round(len(text) / CHARS_PER_TOKEN))
+
+
+def split_text_into_chunks(text: str, max_tokens: int = 100) -> list[str]:
+    """Split text into chunks at sentence boundaries (port of reeder.tts logic).
+
+    Groups sentences until the estimated token budget is reached, falling back
+    to clause boundaries (,;:) for single overlong sentences.
+    """
+    text = re.sub(r"\s+", " ", text.strip())
+
+    if estimate_tokens(text) <= max_tokens:
+        return [text]
+
+    protected = text
+    for pattern, replacement in _ABBREVIATIONS:
+        protected = re.sub(pattern, replacement, protected)
+
+    sentences = []
+    for s in re.split(r"(?<=[.!?])\s+(?=[A-Z]|$)", protected):
+        restored = s.replace("\x00", ".").strip()
+        if restored:
+            sentences.append(restored)
+    if not sentences:
+        sentences = [text]
+
+    # Group sentences into chunks within the token budget
+    chunks: list[str] = []
+    current_chunk = ""
+    current_tokens = 0
+    for sentence in sentences:
+        num_tokens = estimate_tokens(sentence)
+        if not current_chunk:
+            current_chunk, current_tokens = sentence, num_tokens
+        elif current_tokens + num_tokens <= max_tokens:
+            current_chunk += " " + sentence
+            current_tokens += num_tokens
+        else:
+            chunks.append(current_chunk)
+            current_chunk, current_tokens = sentence, num_tokens
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # Split any chunk that is still too long at clause boundaries
+    final_chunks: list[str] = []
+    for chunk in chunks:
+        if estimate_tokens(chunk) <= max_tokens:
+            final_chunks.append(chunk)
+            continue
+        sub_chunk = ""
+        sub_tokens = 0
+        for part in re.split(r"(?<=[,;:])\s+", chunk):
+            part_tokens = estimate_tokens(part)
+            if not sub_chunk:
+                sub_chunk, sub_tokens = part, part_tokens
+            elif sub_tokens + part_tokens <= max_tokens:
+                sub_chunk += " " + part
+                sub_tokens += part_tokens
+            else:
+                final_chunks.append(sub_chunk)
+                sub_chunk, sub_tokens = part, part_tokens
+        if sub_chunk:
+            final_chunks.append(sub_chunk)
+
+    return final_chunks
+
+
+def parse_wav_frames(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
+    """Parse a WAV payload into (pcm_frames, sample_rate, sampwidth, channels)."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        return (
+            wf.readframes(wf.getnframes()),
+            wf.getframerate(),
+            wf.getsampwidth(),
+            wf.getnchannels(),
+        )
 
 
 def load_configured_models() -> list[str]:
@@ -224,7 +339,13 @@ def resolve_voice_and_model(
 
 @app.post("/generate")
 async def generate(request: GenerateRequest):
-    """Generate audio via audio.cpp native server and stream back WAV with metadata headers."""
+    """Generate audio via audio.cpp native server and stream back WAV with metadata headers.
+
+    Splits the text into token-bounded chunks (audio.cpp's qwen3_tts decoder
+    allocates its CUDA graph proportional to input size, so full articles OOM)
+    and synthesizes them sequentially, retrying chunks whose audio length
+    is a statistical outlier (runaway generation detection).
+    """
     start_time = time.monotonic()
     text = request.text.strip()
     if not text:
@@ -232,59 +353,139 @@ async def generate(request: GenerateRequest):
 
     target_model, voice_params = resolve_voice_and_model(request.voice, request.language)
 
-    # Build audio.cpp /v1/audio/speech payload
-    payload: dict[str, Any] = {
+    # Build the audio.cpp /v1/audio/speech payload template
+    base_payload: dict[str, Any] = {
         "model": target_model,
-        "input": text,
         "response_format": "wav",
         "temperature": request.temperature,
     }
-    payload.update(voice_params)
+    base_payload.update(voice_params)
+    if request.language and request.language.lower() != "auto" and "language" not in base_payload:
+        base_payload["language"] = request.language
 
-    if request.language and request.language.lower() != "auto" and "language" not in payload:
-        payload["language"] = request.language
-
+    chunks = split_text_into_chunks(text, max_tokens=request.max_tokens_per_chunk)
+    total_chunks = len(chunks)
     logger.info(
-        f"Forwarding to audio.cpp: {len(text)} chars, model={target_model}, "
-        f"voice={request.voice}, temp={request.temperature}"
+        f"Generating: {len(text)} chars, voice={request.voice}, "
+        f"model={target_model}, temp={request.temperature}, chunks={total_chunks}"
     )
 
-    # Dispatch request to audio.cpp
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        try:
-            resp = await client.post(f"{AUDIOCPP_URL}/v1/audio/speech", json=payload)
-        except httpx.RequestError as exc:
-            logger.error(f"Failed to communicate with audio.cpp server at {AUDIOCPP_URL}: {exc}")
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to communicate with audio.cpp backend: {exc}",
-            ) from exc
+    # Runaway-generation statistics: audio samples per (estimated) token.
+    # A wild chunk produces far more audio per token than the running average.
+    samples_per_token_history: list[float] = list(SAMPLES_PER_TOKEN_SEED)
+    std_dev_limit = OUTLIER_Z_LIMIT
+    max_attempts = MAX_ATTEMPTS_PER_CHUNK
 
-    if resp.status_code != 200:
-        logger.error(f"audio.cpp returned error {resp.status_code}: {resp.text}")
-        raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"audio.cpp generation error: {resp.text}",
-        )
+    sample_rate: Optional[int] = None
+    sampwidth: Optional[int] = None
+    nchannels: Optional[int] = None
+    total_frames = 0
+    retried_chunks = 0
 
-    wav_bytes = resp.content
+    # Stream chunk PCM to disk instead of holding hours of audio in memory.
+    with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as pcm_tmp:
+        pcm_path = Path(pcm_tmp.name)
 
-    # Inspect WAV header to compute duration and sample rate
-    sample_rate = 24000
-    duration = 0.0
     try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            sample_rate = wf.getframerate()
-            n_frames = wf.getnframes()
-            if sample_rate > 0:
-                duration = n_frames / sample_rate
-    except Exception as e:
-        logger.warning(f"Could not parse WAV headers from audio.cpp response: {e}")
+        # One client for the whole request; chunks are generated sequentially
+        # to keep the backend's VRAM footprint bounded.
+        async with httpx.AsyncClient(timeout=CHUNK_HTTP_TIMEOUT) as client:
+            for i, chunk in enumerate(chunks):
+                chunk_tokens = estimate_tokens(chunk)
+                chunk_payload = dict(base_payload, input=chunk)
 
+                attempt, is_outlier = 1, True
+                while is_outlier and attempt <= max_attempts:
+                    try:
+                        resp = await client.post(f"{AUDIOCPP_URL}/v1/audio/speech", json=chunk_payload)
+                    except httpx.RequestError as exc:
+                        logger.error(f"audio.cpp request failed on chunk {i + 1}/{total_chunks}: {exc}")
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Failed to communicate with audio.cpp backend: {exc}",
+                        ) from exc
+
+                    if resp.status_code != 200:
+                        logger.error(f"audio.cpp returned error {resp.status_code}: {resp.text}")
+                        raise HTTPException(
+                            status_code=resp.status_code,
+                            detail=f"audio.cpp generation error: {resp.text}",
+                        )
+
+                    try:
+                        frames, sr, sw, ch = parse_wav_frames(resp.content)
+                    except Exception as exc:
+                        logger.error(f"Could not parse WAV from audio.cpp response (chunk {i + 1}/{total_chunks}): {exc}")
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"audio.cpp returned unparsable audio for chunk {i + 1}/{total_chunks}",
+                        ) from exc
+                    if not frames:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"audio.cpp returned empty audio for chunk {i + 1}/{total_chunks}",
+                        )
+
+                    if sample_rate is None:
+                        sample_rate, sampwidth, nchannels = sr, sw, ch
+                    elif (sr, sw, ch) != (sample_rate, sampwidth, nchannels):
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "audio.cpp returned inconsistent audio format across chunks "
+                                f"({sr}Hz/{sw * 8}bit/{ch}ch vs {sample_rate}Hz/{sampwidth * 8}bit/{nchannels}ch)"
+                            ),
+                        )
+
+                    n_samples = len(frames) // (sw * ch)
+                    samples_per_token = n_samples / chunk_tokens if chunk_tokens > 0 else 0.0
+                    running_avg = statistics.mean(samples_per_token_history)
+                    std_dev = statistics.stdev(samples_per_token_history)
+                    z_score = abs(samples_per_token - running_avg) / std_dev if std_dev > 0 else 0.0
+                    is_outlier = z_score > std_dev_limit
+
+                    if attempt > 1:
+                        retried_chunks += 1
+                    flag = " !!! RETRY" if is_outlier else ""
+                    logger.info(
+                        f"  Chunk {i + 1:>3}/{total_chunks:<3} | {len(chunk):>3}c | {chunk_tokens:>3}t | "
+                        f"{samples_per_token:>9,.2f} s/t | {n_samples / sr:>5.2f}s | "
+                        f"{running_avg:>9,.2f}avg | {std_dev:>6,.2f}\u03c3 | {z_score:>4.2f}z{flag}"
+                    )
+                    attempt += 1
+
+                samples_per_token_history.append(samples_per_token)
+                total_frames += n_samples
+                with open(pcm_path, "ab") as pcm_file:
+                    pcm_file.write(frames)
+
+        if sample_rate is None or sampwidth is None or nchannels is None or total_frames == 0:
+            raise HTTPException(status_code=500, detail="No audio generated")
+
+        # Assemble the final WAV from the streamed PCM temp file.
+        wav_buf = io.BytesIO()
+        with open(pcm_path, "rb") as pcm_file, wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(nchannels)
+            wf.setsampwidth(sampwidth)
+            wf.setframerate(sample_rate)
+            while True:
+                block = pcm_file.read(1024 * 1024)
+                if not block:
+                    break
+                wf.writeframesraw(block)
+        wav_bytes = wav_buf.getvalue()
+    finally:
+        if pcm_path.exists():
+            pcm_path.unlink()
+
+    duration = total_frames / (sample_rate * nchannels) if sample_rate else 0.0
     generation_time = time.monotonic() - start_time
     rtf = generation_time / duration if duration > 0 else 0.0
 
-    logger.info(f"Done: {duration:.2f}s audio generated in {generation_time:.2f}s (RTF={rtf:.3f}x)")
+    logger.info(
+        f"Done: {duration:.2f}s audio in {generation_time:.2f}s (RTF={rtf:.3f}x, "
+        f"{total_chunks} chunks, {retried_chunks} retried)"
+    )
 
     return Response(
         content=wav_bytes,
@@ -292,7 +493,8 @@ async def generate(request: GenerateRequest):
         headers={
             "X-Duration-Seconds": f"{duration:.2f}",
             "X-Sample-Rate": str(sample_rate),
-            "X-Chunks-Generated": "1",
+            "X-Chunks-Generated": str(total_chunks),
+            "X-Retried-Chunks": str(retried_chunks),
             "X-Generation-Time": f"{generation_time:.2f}",
             "X-RTF": f"{rtf:.3f}",
         },

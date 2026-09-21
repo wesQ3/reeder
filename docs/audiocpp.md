@@ -158,6 +158,41 @@ persist across container restarts and are usable from the host too.
 
 ---
 
+## Chunking & Runaway-Generation Detection
+
+The gateway **never forwards full articles** to audio.cpp. The `qwen3_tts`
+speech decoder allocates its CUDA graph proportional to the input length, so a
+56,000-character article in a single request exhausts VRAM
+(`cudaMalloc failed: out of memory`) even on a 16 GB card. Instead, the
+gateway:
+
+1. **Splits text into chunks** at sentence boundaries (with abbreviation
+   protection and clause-boundary fallback), bounded by
+   `max_tokens_per_chunk` (default 100, from the Reeder request). Token counts
+   are estimated at ~4 chars/token — configurable via `CHARS_PER_TOKEN` —
+   since the lightweight gateway does not load a tokenizer.
+2. **Synthesizes chunks sequentially** against `/v1/audio/speech`, streaming
+   each chunk's PCM to disk (articles can be hours of audio) and assembling
+   the final WAV at the end. Sequential generation keeps the backend's VRAM
+   footprint bounded to a single chunk.
+3. **Detects runaway chunks**: each chunk's `samples-per-token` ratio is
+   scored against a running history (z-score > 3 → regenerate, up to 3
+   attempts). This catches degenerate generations that produce minutes of
+   garbage audio for a short chunk.
+
+Tuning environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CHARS_PER_TOKEN` | `4.0` | Token estimate calibration for chunk sizing and s/t stats |
+| `OUTLIER_Z_LIMIT` | `3.0` | z-score threshold marking a chunk as runaway |
+| `MAX_ATTEMPTS_PER_CHUNK` | `3` | Generation attempts per chunk |
+| `CHUNK_HTTP_TIMEOUT` | `300` | HTTP timeout (seconds) per chunk request |
+| `SAMPLES_PER_TOKEN_SEED` | preseeded | Comma-separated s/t history for outlier detection |
+
+Note: long articles take proportionally long to generate (hundreds of chunks
+× seconds each). Ensure the Reeder-side `tts.remote.timeout` accounts for this.
+
 ## Troubleshooting & Verification
 
 ### Test Audio Synthesis via cURL
@@ -172,5 +207,6 @@ Check the returned response headers:
 - `X-Duration-Seconds`: Duration of synthesized audio
 - `X-Sample-Rate`: Sampling rate (e.g., 24000)
 - `X-Chunks-Generated`: Number of chunks processed
+- `X-Retried-Chunks`: Chunks that were regenerated as statistical outliers
 - `X-Generation-Time`: Processing time in seconds
 - `X-RTF`: Real-time factor (`wall_time / audio_duration`)
