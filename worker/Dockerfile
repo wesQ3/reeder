@@ -18,9 +18,10 @@ RUN uv sync --no-install-project --no-dev
 COPY server.json run.sh tts_api.py ./
 RUN chmod +x /app/run.sh
 
-# Voice files and GGUF models mounted as volumes
+# Voice files and GGUF models mounted as volumes.
+# /app/models is audio.cpp's default models root (WebUI downloads land here).
 VOLUME /data/voices
-VOLUME /models
+VOLUME /app/models
 
 # 8100: Reeder compatibility gateway
 # 8080: audio.cpp native server & Arena WebUI
@@ -30,7 +31,6 @@ ENV ACTIVE_TTS_MODEL="qwen3-tts"
 ENV AUDIOCPP_BACKEND="cuda"
 ENV AUDIOCPP_URL="http://127.0.0.1:8080"
 ENV VOICES_DIR="/data/voices"
-ENV MODELS_DIR="/models"
 ENV SERVER_CONFIG_PATH="/app/server.json"
 
 ENTRYPOINT ["/app/run.sh"]

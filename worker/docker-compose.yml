@@ -5,14 +5,17 @@ services:
       dockerfile: Dockerfile
     container_name: reeder-tts-worker
     restart: unless-stopped
-    env_file:
-      - .env
+    # NOTE: .env is used by compose for host-side substitution only.
+    # Do not load it via env_file: it contains host paths (VOICES_DIR,
+    # MODELS_DIR) that must never leak into the container environment.
     ports:
       - "8100:8100"       # Reeder compatibility endpoint
       - "8080:8080"       # audio.cpp WebUI / Arena
     volumes:
       - ${VOICES_DIR:-/var/lib/reeder/voices}:/data/voices:ro
-      - ${MODELS_DIR:-/var/lib/reeder/models}:/models
+      # /app/models is audio.cpp's default models root; mounting it writable
+      # lets the embedded WebUI download and manage models there directly.
+      - ${MODELS_DIR:-/var/lib/reeder/models}:/app/models
     environment:
       - ACTIVE_TTS_MODEL=${ACTIVE_TTS_MODEL:-qwen3-tts}
       - AUDIOCPP_BACKEND=${AUDIOCPP_BACKEND:-cuda}

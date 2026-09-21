@@ -37,11 +37,15 @@ This document details the migration of the Reeder TTS worker from the Python/PyT
 │  │ - Embedded WebUI & Arena mode on port 8080                    │  │
 │  └───────────────────────────────┬───────────────────────────────┘  │
 │                                  │                                  │
-│                        /models   │   /data/voices                   │
-└───────────────────────────┬──────┴─────────┬────────────────────────┘
-                            ▼                ▼
+│                       /app/models │   /data/voices                   │
+└───────────────────────────┬───────┴─────────┬────────────────────────┘
+                            ▼                 ▼
                      [GGUF Models]     [Voice Samples & Transcripts]
 ```
+
+All paths referenced by processes inside the container are internal
+(`/app/models`, `/data/voices`). Host paths appear only in the compose file's
+volume substitutions.
 
 ### Key Highlights
 - **Zero changes** to `reeder/`, `bin/reeder-web`, `bin/process-job`, or systemd configurations.
@@ -54,7 +58,8 @@ This document details the migration of the Reeder TTS worker from the Python/PyT
 ## Quickstart
 
 ### 1. Configure Host Environment
-In `worker/`:
+In `worker/` (run all `docker compose` commands from this directory so the
+local `.env` is picked up):
 ```bash
 cp .env.example .env
 vim .env
@@ -66,6 +71,11 @@ MODELS_DIR=/var/lib/reeder/models
 ACTIVE_TTS_MODEL=qwen3-tts
 AUDIOCPP_BACKEND=cuda
 ```
+
+> **Note:** `.env` values are used by docker-compose on the host for volume
+> substitution only (`${VOICES_DIR}:/data/voices`, `${MODELS_DIR}:/app/models`).
+> They are intentionally **not** loaded into the container environment — the
+> container only ever sees the internal paths.
 
 ### 2. Launch Worker Container
 ```bash
@@ -125,7 +135,7 @@ Edit `worker/server.json`:
 {
   "id": "pocket-tts",
   "family": "pocket_tts",
-  "path": "/models/PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf",
+  "path": "/app/models/PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf",
   "task": "tts",
   "mode": "offline"
 }
@@ -141,6 +151,10 @@ audio.cpp includes an embedded WebUI exposed on port `8080`:
 1. Open `http://<worker-ip>:8080` in your web browser.
 2. **Model Management**: Search, download, and manage GGUF models directly via HuggingFace or ModelScope catalogs.
 3. **Model Arena**: Compare models side-by-side on the same prompt to evaluate voice naturalness, RTF, tokens/sec, and GPU memory usage.
+
+Models downloaded via the WebUI are installed to audio.cpp's models root,
+`/app/models` inside the container — which is your host `MODELS_DIR`, so they
+persist across container restarts and are usable from the host too.
 
 ---
 
