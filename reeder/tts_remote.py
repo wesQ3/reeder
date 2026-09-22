@@ -88,6 +88,26 @@ def wake_remote_if_configured(
     return False
 
 
+def _prechunk_text(text: str, config: dict) -> list[dict]:
+    """Split text into chunks with real token counts for the remote worker.
+
+    The remote audio.cpp worker has no tokenizer; the job processor does.
+    Splitting here (with reeder.tts's sentence-boundary chunker and the actual
+    Qwen tokenizer) keeps the worker's CUDA graph allocations bounded —
+    audio.cpp's qwen3_tts decoder sizes its graph to the input.
+    """
+    from reeder.tts import get_tts_tokenizer, split_text_into_chunks
+
+    model_name = config["tts"].get("model", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+    max_tokens = config["tts"].get("max_tokens_per_chunk", 100)
+    tokenizer = get_tts_tokenizer(model_name)
+    pieces = split_text_into_chunks(text, tokenizer, max_tokens=max_tokens)
+    return [
+        {"text": piece, "tokens": len(tokenizer(piece, return_tensors="pt").input_ids[0])}
+        for piece in pieces
+    ]
+
+
 def generate_audio_remote(
     text: str,
     output_path: Path,
@@ -126,18 +146,27 @@ def generate_audio_remote(
 
     status("Remote worker available, dispatching...")
 
+    # Split into chunks with the real tokenizer before dispatching. The worker
+    # accepts pre-split chunks so it never has to size its CUDA graph to a
+    # full article.
+    try:
+        chunks = _prechunk_text(text, config)
+    except Exception as e:
+        status(f"Tokenizer unavailable for pre-splitting ({e}); falling back to local")
+        return False
+    if len(chunks) > 1:
+        status(f"Pre-split text into {len(chunks)} chunks (max {config['tts'].get('max_tokens_per_chunk', 100)} tokens each)")
+
     # Build request
     voice = job.get("voice", "default")
     temperature = job.get("temperature", config["tts"].get("temperature", 0.8))
     language = job.get("language", "Auto")
-    max_tokens = config["tts"].get("max_tokens_per_chunk", 100)
 
     payload = json.dumps({
-        "text": text,
+        "chunks": chunks,
         "voice": voice,
         "temperature": temperature,
         "language": language,
-        "max_tokens_per_chunk": max_tokens,
     }).encode()
 
     generate_url = f"{url}/generate"

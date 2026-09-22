@@ -12,7 +12,6 @@ import io
 import json
 import logging
 import os
-import re
 import statistics
 import tempfile
 import time
@@ -44,15 +43,17 @@ SERVER_CONFIG_PATH: Path = Path(os.getenv("SERVER_CONFIG_PATH", "/app/server.jso
 
 # Chunking & runaway-generation detection settings.
 # audio.cpp's qwen3_tts speech decoder allocates its CUDA graph sized to the
-# input, so long texts must be split into small chunks and synthesized
-# one at a time (the whole point of this worker).
-CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "4.0"))  # Qwen tokenizer ~4 chars/token (English)
+# input, so long texts must arrive as small pre-split chunks (the job
+# processor splits with the real Qwen tokenizer before dispatching).
+# This worker synthesizes chunks sequentially and retries chunks whose
+# audio length is a statistical outlier.
 OUTLIER_Z_LIMIT = float(os.getenv("OUTLIER_Z_LIMIT", "3.0"))
 MAX_ATTEMPTS_PER_CHUNK = int(os.getenv("MAX_ATTEMPTS_PER_CHUNK", "3"))
 CHUNK_HTTP_TIMEOUT = float(os.getenv("CHUNK_HTTP_TIMEOUT", "300.0"))
-# Preseeded samples-per-estimated-token history from past runs (see reeder.tts).
-# Token counts here are estimates (chars/CHARS_PER_TOKEN), so recalibrate via
-# SAMPLES_PER_TOKEN_SEED="v1,v2,..." if the voice/model yields a different scale.
+CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "4.0"))
+# Preseeded samples-per-token history from past runs (see reeder.tts).
+# Recalibrate via SAMPLES_PER_TOKEN_SEED="v1,v2,..." if a voice/model yields
+# a different scale.
 _DEFAULT_SPT_SEED = "5110,4793,5234,5889,5130,5941,5877,5138,5607,6370,6260,6381,5894,5538,6027,5280"
 _seed_env = os.getenv("SAMPLES_PER_TOKEN_SEED", "").strip() or _DEFAULT_SPT_SEED
 SAMPLES_PER_TOKEN_SEED: list[float] = [float(v) for v in _seed_env.split(",") if v.strip()]
@@ -60,88 +61,15 @@ if len(SAMPLES_PER_TOKEN_SEED) < 2:
     # statistics.stdev needs at least two points for outlier detection to work
     SAMPLES_PER_TOKEN_SEED = [float(v) for v in _DEFAULT_SPT_SEED.split(",")]
 
-# Common abbreviations that shouldn't trigger sentence splits
-_ABBREVIATIONS = [
-    (r"\bMr\.", "Mr\x00"), (r"\bMrs\.", "Mrs\x00"),
-    (r"\bMs\.", "Ms\x00"), (r"\bDr\.", "Dr\x00"),
-    (r"\bProf\.", "Prof\x00"), (r"\bSr\.", "Sr\x00"),
-    (r"\bJr\.", "Jr\x00"), (r"\bSt\.", "St\x00"),
-    (r"\bvs\.", "vs\x00"), (r"\betc\.", "etc\x00"),
-    (r"\be\.g\.", "eg\x00"), (r"\bi\.e\.", "ie\x00"),
-    (r"\bU\.S\.", "US\x00"), (r"\bU\.K\.", "UK\x00"),
-    (r"\bNo\.", "No\x00"), (r"\bCo\.", "Co\x00"),
-    (r"\bInc\.", "Inc\x00"), (r"\bLtd\.", "Ltd\x00"),
-    (r"\bCorp\.", "Corp\x00"),
-]
-
 
 def estimate_tokens(text: str) -> int:
-    """Approximate Qwen-style token count without loading a tokenizer."""
-    return max(1, round(len(text) / CHARS_PER_TOKEN))
+    """Fallback token estimate for chunks dispatched without a token count.
 
-
-def split_text_into_chunks(text: str, max_tokens: int = 100) -> list[str]:
-    """Split text into chunks at sentence boundaries (port of reeder.tts logic).
-
-    Groups sentences until the estimated token budget is reached, falling back
-    to clause boundaries (,;:) for single overlong sentences.
+    The job processor measures real token counts with the Qwen tokenizer;
+    this heuristic (~4 chars/token) only covers ad-hoc callers that send
+    raw `text` (e.g. curl demos) and is used solely for the s/t statistics.
     """
-    text = re.sub(r"\s+", " ", text.strip())
-
-    if estimate_tokens(text) <= max_tokens:
-        return [text]
-
-    protected = text
-    for pattern, replacement in _ABBREVIATIONS:
-        protected = re.sub(pattern, replacement, protected)
-
-    sentences = []
-    for s in re.split(r"(?<=[.!?])\s+(?=[A-Z]|$)", protected):
-        restored = s.replace("\x00", ".").strip()
-        if restored:
-            sentences.append(restored)
-    if not sentences:
-        sentences = [text]
-
-    # Group sentences into chunks within the token budget
-    chunks: list[str] = []
-    current_chunk = ""
-    current_tokens = 0
-    for sentence in sentences:
-        num_tokens = estimate_tokens(sentence)
-        if not current_chunk:
-            current_chunk, current_tokens = sentence, num_tokens
-        elif current_tokens + num_tokens <= max_tokens:
-            current_chunk += " " + sentence
-            current_tokens += num_tokens
-        else:
-            chunks.append(current_chunk)
-            current_chunk, current_tokens = sentence, num_tokens
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    # Split any chunk that is still too long at clause boundaries
-    final_chunks: list[str] = []
-    for chunk in chunks:
-        if estimate_tokens(chunk) <= max_tokens:
-            final_chunks.append(chunk)
-            continue
-        sub_chunk = ""
-        sub_tokens = 0
-        for part in re.split(r"(?<=[,;:])\s+", chunk):
-            part_tokens = estimate_tokens(part)
-            if not sub_chunk:
-                sub_chunk, sub_tokens = part, part_tokens
-            elif sub_tokens + part_tokens <= max_tokens:
-                sub_chunk += " " + part
-                sub_tokens += part_tokens
-            else:
-                final_chunks.append(sub_chunk)
-                sub_chunk, sub_tokens = part, part_tokens
-        if sub_chunk:
-            final_chunks.append(sub_chunk)
-
-    return final_chunks
+    return max(1, round(len(text) / CHARS_PER_TOKEN))
 
 
 def parse_wav_frames(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
@@ -175,13 +103,27 @@ def load_configured_models() -> list[str]:
     return default_models
 
 
+class ChunkSpec(BaseModel):
+    """A single pre-split chunk of text with its measured token count."""
+    text: str = Field(..., min_length=1, description="Chunk text")
+    tokens: Optional[int] = Field(
+        default=None, ge=1, description="Token count measured by the caller's Qwen tokenizer"
+    )
+
+
 class GenerateRequest(BaseModel):
-    """Request body for /generate endpoint matching Reeder contract."""
-    text: str = Field(..., description="Text to synthesize")
+    """Request body for /generate endpoint matching Reeder contract.
+
+    Send either `chunks` (pre-split with the real tokenizer on the job
+    processor — required for article-length text, since audio.cpp's qwen3_tts
+    decoder graph scales with input size) or a single `text` (convenience for
+    demo-sized requests).
+    """
+    text: Optional[str] = Field(default=None, description="Single text to synthesize (short texts only)")
+    chunks: Optional[list[ChunkSpec]] = Field(default=None, description="Pre-split chunks")
     voice: str = Field(default="default", description="Voice name (maps to voices dir or preset)")
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     language: str = Field(default="Auto")
-    max_tokens_per_chunk: int = Field(default=100, ge=10, le=500)
 
 
 class HealthResponse(BaseModel):
@@ -341,15 +283,34 @@ def resolve_voice_and_model(
 async def generate(request: GenerateRequest):
     """Generate audio via audio.cpp native server and stream back WAV with metadata headers.
 
-    Splits the text into token-bounded chunks (audio.cpp's qwen3_tts decoder
-    allocates its CUDA graph proportional to input size, so full articles OOM)
-    and synthesizes them sequentially, retrying chunks whose audio length
-    is a statistical outlier (runaway generation detection).
+    Expects pre-split chunks (the job processor splits with the real Qwen
+    tokenizer, since audio.cpp's qwen3_tts decoder allocates its CUDA graph
+    proportional to input size and full articles OOM). Chunks are synthesized
+    sequentially, retrying those whose audio length is a statistical outlier
+    (runaway generation detection).
     """
     start_time = time.monotonic()
-    text = request.text.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    if request.text is not None and request.chunks is not None:
+        raise HTTPException(status_code=400, detail="Provide either 'text' or 'chunks', not both")
+
+    # Normalize input into (chunk_text, token_count) pairs. Token counts come
+    # from the caller's Qwen tokenizer when pre-split; ad-hoc single-text
+    # requests fall back to a chars-per-token estimate.
+    if request.chunks is not None:
+        chunk_specs = [(c.text.strip(), c.tokens) for c in request.chunks]
+        chunk_specs = [(t, n) for t, n in chunk_specs if t]
+        if not chunk_specs:
+            raise HTTPException(status_code=400, detail="'chunks' must contain at least one non-empty chunk")
+        client_presplit = True
+    elif request.text is not None:
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        chunk_specs = [(text, None)]
+        client_presplit = False
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'text' or 'chunks'")
 
     target_model, voice_params = resolve_voice_and_model(request.voice, request.language)
 
@@ -363,15 +324,16 @@ async def generate(request: GenerateRequest):
     if request.language and request.language.lower() != "auto" and "language" not in base_payload:
         base_payload["language"] = request.language
 
-    chunks = split_text_into_chunks(text, max_tokens=request.max_tokens_per_chunk)
-    total_chunks = len(chunks)
+    total_chars = sum(len(t) for t, _ in chunk_specs)
+    total_chunks = len(chunk_specs)
+    source = "client pre-split" if client_presplit else "single text"
     logger.info(
-        f"Generating: {len(text)} chars, voice={request.voice}, "
-        f"model={target_model}, temp={request.temperature}, chunks={total_chunks}"
+        f"Generating: {total_chars} chars in {total_chunks} chunk(s) ({source}), "
+        f"voice={request.voice}, model={target_model}, temp={request.temperature}"
     )
 
-    # Runaway-generation statistics: audio samples per (estimated) token.
-    # A wild chunk produces far more audio per token than the running average.
+    # Runaway-generation statistics: audio samples per token. A wild chunk
+    # produces far more audio per token than the running average.
     samples_per_token_history: list[float] = list(SAMPLES_PER_TOKEN_SEED)
     std_dev_limit = OUTLIER_Z_LIMIT
     max_attempts = MAX_ATTEMPTS_PER_CHUNK
@@ -390,8 +352,8 @@ async def generate(request: GenerateRequest):
         # One client for the whole request; chunks are generated sequentially
         # to keep the backend's VRAM footprint bounded.
         async with httpx.AsyncClient(timeout=CHUNK_HTTP_TIMEOUT) as client:
-            for i, chunk in enumerate(chunks):
-                chunk_tokens = estimate_tokens(chunk)
+            for i, (chunk, measured_tokens) in enumerate(chunk_specs):
+                chunk_tokens = measured_tokens if measured_tokens else estimate_tokens(chunk)
                 chunk_payload = dict(base_payload, input=chunk)
 
                 attempt, is_outlier = 1, True

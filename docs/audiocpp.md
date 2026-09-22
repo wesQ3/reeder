@@ -163,28 +163,39 @@ persist across container restarts and are usable from the host too.
 The gateway **never forwards full articles** to audio.cpp. The `qwen3_tts`
 speech decoder allocates its CUDA graph proportional to the input length, so a
 56,000-character article in a single request exhausts VRAM
-(`cudaMalloc failed: out of memory`) even on a 16 GB card. Instead, the
-gateway:
+(`cudaMalloc failed: out of memory`) even on a 16 GB card. Chunking happens on
+the **job processor** (`reeder/tts_remote.py`), which has the real Qwen
+tokenizer: it splits text with `reeder.tts.split_text_into_chunks` (sentence
+boundaries, abbreviation protection, clause fallback, `max_tokens_per_chunk`
+from config) and dispatches the pre-split chunks with measured token counts:
 
-1. **Splits text into chunks** at sentence boundaries (with abbreviation
-   protection and clause-boundary fallback), bounded by
-   `max_tokens_per_chunk` (default 100, from the Reeder request). Token counts
-   are estimated at ~4 chars/token — configurable via `CHARS_PER_TOKEN` —
-   since the lightweight gateway does not load a tokenizer.
-2. **Synthesizes chunks sequentially** against `/v1/audio/speech`, streaming
+```json
+{
+  "chunks": [{"text": "First chunk ...", "tokens": 90},
+             {"text": "Second chunk ...", "tokens": 87}],
+  "voice": "default", "temperature": 0.8, "language": "Auto"
+}
+```
+
+The worker (`/generate`) accepts either `chunks` (required for
+article-length text) or a single short `text` (convenience for curl demos;
+token counts then fall back to a ~4 chars/token estimate, only used for the
+statistics below). The worker:
+
+1. **Synthesizes chunks sequentially** against `/v1/audio/speech`, streaming
    each chunk's PCM to disk (articles can be hours of audio) and assembling
    the final WAV at the end. Sequential generation keeps the backend's VRAM
    footprint bounded to a single chunk.
-3. **Detects runaway chunks**: each chunk's `samples-per-token` ratio is
+2. **Detects runaway chunks**: each chunk's `samples-per-token` ratio is
    scored against a running history (z-score > 3 → regenerate, up to 3
    attempts). This catches degenerate generations that produce minutes of
    garbage audio for a short chunk.
 
-Tuning environment variables:
+Tuning environment variables (worker container):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CHARS_PER_TOKEN` | `4.0` | Token estimate calibration for chunk sizing and s/t stats |
+| `CHARS_PER_TOKEN` | `4.0` | Token estimate fallback for `text`-only requests without token counts |
 | `OUTLIER_Z_LIMIT` | `3.0` | z-score threshold marking a chunk as runaway |
 | `MAX_ATTEMPTS_PER_CHUNK` | `3` | Generation attempts per chunk |
 | `CHUNK_HTTP_TIMEOUT` | `300` | HTTP timeout (seconds) per chunk request |
@@ -196,6 +207,9 @@ Note: long articles take proportionally long to generate (hundreds of chunks
 ## Troubleshooting & Verification
 
 ### Test Audio Synthesis via cURL
+
+Single short text (demo-sized; article-length text must be pre-split into
+`chunks` by the caller — see above):
 ```bash
 curl -X POST http://localhost:8100/generate \
   -H "Content-Type: application/json" \

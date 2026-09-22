@@ -15,6 +15,8 @@ import numpy as np
 
 # Global TTS model (lazy-loaded)
 _tts_model = None
+# Cached tokenizers (loaded without model weights, for chunking)
+_tts_tokenizers: dict = {}
 
 
 def get_tts_model(model_name: str, device: str = "cpu"):
@@ -33,6 +35,30 @@ def get_tts_model(model_name: str, device: str = "cpu"):
         )
         print("  Model loaded successfully.", flush=True)
     return _tts_model
+
+
+def get_tts_tokenizer(model_name: str):
+    """Get the model's tokenizer WITHOUT loading model weights.
+
+    Used for splitting text into chunks before dispatching to the remote GPU
+    worker, which has no tokenizer. Falls back to the full model's processor
+    tokenizer if a standalone tokenizer cannot be loaded.
+    """
+    if model_name not in _tts_tokenizers:
+        try:
+            from transformers import AutoTokenizer
+
+            print(f"Loading TTS tokenizer only: {model_name}", flush=True)
+            _tts_tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+            print("  Tokenizer loaded.", flush=True)
+        except Exception as exc:
+            print(
+                f"  Standalone tokenizer unavailable for {model_name} ({exc}); "
+                "falling back to full model processor",
+                flush=True,
+            )
+            _tts_tokenizers[model_name] = get_tts_model(model_name, "cpu").processor.tokenizer
+    return _tts_tokenizers[model_name]
 
 
 def split_text_into_chunks(text: str, tokenizer, max_tokens: int = 50) -> list[str]:
