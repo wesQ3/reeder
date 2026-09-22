@@ -7,40 +7,45 @@ This document details the migration of the Reeder TTS worker from the Python/PyT
 ## Architecture Overview
 
 ```
-[User Browser]
-       │
-       ▼
-[reeder-web (nuc0:8081)] ──> writes job.json to inbox/ (NO CODE CHANGES)
-       │
-[process-job (nuc0 daemon)] ──> reeder/tts_remote.py (NO CODE CHANGES)
-       │
-       ├─> GET  http://worker:8100/health
-       └─> POST http://worker:8100/generate
-             │
-┌────────────▼────────────────────────────────────────────────────────┐
-│ Worker Container (GPU Host)                                         │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │ Reeder Compatibility Gateway (Port 8100)                      │  │
-│  │ - Implements GET /health & POST /generate                     │  │
-│  │ - Translates voice names to clone refs or preset speaker IDs  │  │
-│  │ - Dispatches requests to internal audio.cpp server            │  │
-│  │ - Computes audio headers: X-Duration-Seconds, X-RTF, etc.     │  │
-│  └───────────────────────────────┬───────────────────────────────┘  │
-│                                  │ Internal HTTP (127.0.0.1:8080)   │
-│                                  ▼                                  │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │ audio.cpp Native Server (audiocpp_server on port 8080)        │  │
-│  │ - Native C++ / CUDA inference powered by ggml                 │  │
-│  │ - OpenAI-compatible API: POST /v1/audio/speech                │  │
-│  │ - GGUF model support (Qwen3-TTS, PocketTTS, Kokoro, etc.)     │  │
-│  │ - Embedded WebUI & Arena mode on port 8080                    │  │
-│  └───────────────────────────────┬───────────────────────────────┘  │
-│                                  │                                  │
-│                       /app/models │   /data/voices                   │
-└───────────────────────────┬───────┴─────────┬────────────────────────┘
-                            ▼                 ▼
-                     [GGUF Models]     [Voice Samples & Transcripts]
+┌───────────────────────────────────────────────────────────────────────┐
+│  Reeder Host (main service)                                           │
+│                                                                       │
+│  [User Browser] ──> reeder-web ──> writes job.json into inbox/        │
+│                                                                       │
+│  systemd.path triggers process-job, which:                            │
+│  1. Extracts article text (trafilatura)                               │
+│  2. Splits text into chunks (real Qwen tokenizer, reeder.tts)         │
+│  3. Requests audio from the remote GPU worker (below),                │
+│     falling back to local generation if unavailable                   │
+│  4. Converts WAV to the configured audio format (opus/mp3, ffmpeg)    │
+│  5. Updates the RSS podcast feed (www/feed.xml)                       │
+│                                                                       │
+│  [Podcast Apps] <── Caddy serves www/audio/ + www/feed.xml            │
+└───────────────────────────────────────────────────────────┬───────────┘
+            GET /health · POST /generate (pre-split chunks) │
+┌───────────────────────────────────────────────────────────▼───────────┐
+│  Worker Container (GPU host)                                          │
+│                                                                       │
+  ┌───────────────────────────────────────────────────────────────────┐
+  │ Reeder Compatibility Gateway (:8100)                              │
+  │ - GET /health, POST /generate                                     │
+  │ - Routes voice names to clone refs or preset speaker IDs          │
+  │ - Synthesizes pre-split chunks sequentially with runaway          │
+  │   (z-score) detection, returns one WAV                            │
+  └───────────────────────────────────────────────────────────────────┘
+│                                                                       │
+                                  │ internal HTTP (127.0.0.1:8080)
+                                  ▼
+  ┌───────────────────────────────────────────────────────────────────┐
+  │ audio.cpp Native Server (audiocpp_server on :8080)                │
+  │ - Native C++/ggml CUDA inference, GGUF quantized models           │
+  │ - OpenAI-compatible API: POST /v1/audio/speech                    │
+  │ - Embedded WebUI & Model Arena                                    │
+  │ - Qwen3-TTS, PocketTTS, Kokoro, ...                               │
+  └───────────────────────────────────────────────────────────────────┘
+│                                                                       │
+│  Volumes: /app/models (GGUF models) · /data/voices (voice samples)    │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 All paths referenced by processes inside the container are internal
@@ -48,7 +53,10 @@ All paths referenced by processes inside the container are internal
 volume substitutions.
 
 ### Key Highlights
-- **Zero changes** to `reeder/`, `bin/reeder-web`, `bin/process-job`, or systemd configurations.
+- **No changes** to `bin/reeder-web`, `bin/process-job`, or systemd
+  configurations. `reeder/` gains only the tokenizer-based pre-splitting in
+  `tts_remote.py`/`tts.py` (chunking moved to the job processor, which has
+  the real Qwen tokenizer).
 - **Dramatically reduced footprint**: Python CUDA/PyTorch dependencies (~7-8 GB) eliminated in favor of native C++ kernels.
 - **Instant container builds**: Builds take seconds instead of 15+ minutes.
 - **Lower latency & faster RTF**: 2x–8x faster inference via GGUF Q8_0/FP16 native execution.

@@ -6,16 +6,47 @@ A personal TTS RSS service that converts articles and text to audio, served as a
 
 ## Overview
 
+```mermaid
+flowchart TB
+    user["User Browser"] --> web["reeder-web"]
+    web -->|"writes job.json"| inbox["inbox/"]
+
+    subgraph host["Reeder Host (main service)"]
+        proc["process-job (triggered by systemd.path)"]
+        s1["1. Extract article text (trafilatura)"]
+        s2["2. Split text into chunks<br>(real Qwen tokenizer, reeder.tts)"]
+        s3["3. Generate WAV via the remote GPU worker<br>(falls back to local generation)"]
+        s4["4. Convert WAV to opus/mp3 (ffmpeg)"]
+        s5["5. Update RSS podcast feed (www/feed.xml)"]
+        audio["www/audio/ (generated audio files)"]
+        caddy["Caddy serves www/audio/ + www/feed.xml"]
+        proc --> s1 --> s2 --> s3 --> s4 --> s5
+        s4 --> audio
+        s5 --> caddy
+        audio --> caddy
+    end
+
+    subgraph worker["Worker Container (GPU host)"]
+        gateway["Reeder Compatibility Gateway (:8100)<br>voice routing to clone refs or preset speakers<br>chunked synthesis with runaway (z-score) detection"]
+        audiocpp["audio.cpp Native Server (:8080)<br>C++/ggml CUDA inference, GGUF models<br>OpenAI-compatible POST /v1/audio/speech · WebUI & Model Arena"]
+        models[("/app/models (GGUF models)")]
+        voices[("/data/voices (voice samples & transcripts)")]
+        gateway -->|"internal HTTP 127.0.0.1:8080"| audiocpp
+        models -.-> audiocpp
+        voices -.-> gateway
+    end
+
+    inbox --> proc
+    s3 ==>|"GET /health · POST /generate (pre-split chunks)"| gateway
+    caddy --> apps["Podcast Apps"]
 ```
-inbox/           → Drop job files here
-  ↓
-processing/      → Worker processes jobs one at a time
-  ↓
-done/            → Completed job metadata
-  ↓
-www/audio/       → Generated audio files
-www/feed.xml     → RSS podcast feed
-```
+
+Jobs are dropped as JSON files into `inbox/`, processed one at a time, and the
+resulting audio is converted to the configured format (`opus` or `mp3`), added
+to the generated files directory, and served as an RSS podcast feed. TTS
+synthesis runs on a remote GPU worker ([audio.cpp](https://github.com/0xShug0/audio.cpp))
+when configured, falling back to local generation —
+see [docs/audiocpp.md](docs/audiocpp.md) for the worker playbook.
 
 ## Quick Start
 
@@ -108,9 +139,14 @@ Subscribe to `https://your-hostname/feed.xml` in any podcast app:
 
 - **systemd.path**: Watches inbox for new job files
 - **systemd.service**: Processes one job at a time
-- **Qwen3-TTS**: Generates speech audio with voice cloning
-- **trafilatura**: Extracts article text from URLs
-- **Caddy**: Serves audio files and RSS feed over HTTPS
+- **process-job**: Extracts article text (trafilatura), splits it into
+  token-bounded chunks, and dispatches to the remote TTS worker, falling back
+  to local generation when unavailable
+- **Remote worker (audio.cpp)**: Native ggml/CUDA inference of GGUF TTS models
+  (Qwen3-TTS voice cloning, Kokoro presets, ...) behind the compatibility
+  gateway, with chunked synthesis and runaway-chunk detection
+- **ffmpeg**: Converts generated WAV to the configured audio format
+- **Caddy**: Serves audio files and the RSS podcast feed over HTTPS
 
 ## Development
 
