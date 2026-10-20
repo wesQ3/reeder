@@ -16,7 +16,10 @@ services:
       # /app/models is audio.cpp's default models root; mounting it writable
       # lets the embedded WebUI download and manage models there directly.
       - ${MODELS_DIR:-/var/lib/reeder/models}:/app/models
+      # Shared work directory for agent-provided inputs and runtime outputs.
+      - ${WORK_DIR:-/var/lib/reeder-worker}:/work
     environment:
+      - WORK_DIR=/work
       - ACTIVE_TTS_MODEL=${ACTIVE_TTS_MODEL:-qwen3-tts}
       - AUDIOCPP_BACKEND=${AUDIOCPP_BACKEND:-cuda}
       # Chunking & runaway-generation detection tuning (all optional)

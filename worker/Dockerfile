@@ -22,6 +22,7 @@ RUN chmod +x /app/run.sh
 # /app/models is audio.cpp's default models root (WebUI downloads land here).
 VOLUME /data/voices
 VOLUME /app/models
+VOLUME /work
 
 # 8100: Reeder compatibility gateway
 # 8080: audio.cpp native server & Arena WebUI
@@ -32,5 +33,6 @@ ENV AUDIOCPP_BACKEND="cuda"
 ENV AUDIOCPP_URL="http://127.0.0.1:8080"
 ENV VOICES_DIR="/data/voices"
 ENV SERVER_CONFIG_PATH="/app/server.json"
+ENV WORK_DIR="/work"
 
 ENTRYPOINT ["/app/run.sh"]

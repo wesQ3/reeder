@@ -284,10 +284,12 @@ class Orchestrator:
             duration = convert_audio(wav_path, temporary_output, self.config)
             os.replace(temporary_output, audio_output)
 
+        metrics = result.get("metrics") or {}
         completed = {
             "started": tts_task.get("started_at") or job["created_at"],
             "completed": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "elapsed_seconds": result.get("elapsed_seconds"),
+            "elapsed_seconds": result.get("elapsed_seconds")
+            or metrics.get("elapsed_seconds"),
             "audio_file": audio_filename,
             "audio_size": audio_output.stat().st_size,
             "duration_seconds": duration,
@@ -296,7 +298,7 @@ class Orchestrator:
             or self.config.get("tts", {}).get("model", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
             "engine": result.get("engine"),
             "worker_id": tts_task.get("lease_owner"),
-            "metrics": result.get("metrics"),
+            "metrics": metrics,
             "log_path": str(
                 self.store.log_path(job["id"], tts_task["id"], max(1, tts_task["attempt"]))
             ),

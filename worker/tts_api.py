@@ -8,6 +8,7 @@ main Reeder service.
 """
 
 import argparse
+import asyncio
 import io
 import json
 import logging
@@ -22,6 +23,7 @@ from typing import Any, Optional
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -279,61 +281,59 @@ def resolve_voice_and_model(
     return target_model, extra_params
 
 
-@app.post("/generate")
-async def generate(request: GenerateRequest):
-    """Generate audio via audio.cpp native server and stream back WAV with metadata headers.
+class GenerationCancelled(Exception):
+    """Raised when an operator/agent cancels a synthesis run."""
 
-    Expects pre-split chunks (the job processor splits with the real Qwen
-    tokenizer, since audio.cpp's qwen3_tts decoder allocates its CUDA graph
-    proportional to input size and full articles OOM). Chunks are synthesized
-    sequentially, retrying those whose audio length is a statistical outlier
-    (runaway generation detection).
+
+async def synthesize_chunks(
+    chunk_specs: list[tuple[str, Optional[int]]],
+    *,
+    voice: str,
+    temperature: float,
+    language: str,
+    client_presplit: bool,
+    progress_cb=None,
+    log_cb=None,
+    cancel_check=None,
+) -> dict[str, Any]:
+    """Synthesize pre-split chunks into one WAV.
+
+    This is the reusable core behind both the synchronous ``/generate``
+    compatibility endpoint and the asynchronous local runtime API. Callbacks
+    let the runtime report per-chunk progress and structured logs.
     """
     start_time = time.monotonic()
 
-    if request.text is not None and request.chunks is not None:
-        raise HTTPException(status_code=400, detail="Provide either 'text' or 'chunks', not both")
+    def log(level: str, message: str, data: Any = None) -> None:
+        logger.log(getattr(logging, level.upper(), logging.INFO), message)
+        if log_cb:
+            log_cb(level, message, data)
 
-    # Normalize input into (chunk_text, token_count) pairs. Token counts come
-    # from the caller's Qwen tokenizer when pre-split; ad-hoc single-text
-    # requests fall back to a chars-per-token estimate.
-    if request.chunks is not None:
-        chunk_specs = [(c.text.strip(), c.tokens) for c in request.chunks]
-        chunk_specs = [(t, n) for t, n in chunk_specs if t]
-        if not chunk_specs:
-            raise HTTPException(status_code=400, detail="'chunks' must contain at least one non-empty chunk")
-        client_presplit = True
-    elif request.text is not None:
-        text = request.text.strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="Text cannot be empty")
-        chunk_specs = [(text, None)]
-        client_presplit = False
-    else:
-        raise HTTPException(status_code=400, detail="Provide 'text' or 'chunks'")
+    def check_cancel() -> None:
+        if cancel_check and cancel_check():
+            raise GenerationCancelled("Generation canceled")
 
-    target_model, voice_params = resolve_voice_and_model(request.voice, request.language)
+    target_model, voice_params = resolve_voice_and_model(voice, language)
 
-    # Build the audio.cpp /v1/audio/speech payload template
     base_payload: dict[str, Any] = {
         "model": target_model,
         "response_format": "wav",
-        "temperature": request.temperature,
+        "temperature": temperature,
     }
     base_payload.update(voice_params)
-    if request.language and request.language.lower() != "auto" and "language" not in base_payload:
-        base_payload["language"] = request.language
+    if language and language.lower() != "auto" and "language" not in base_payload:
+        base_payload["language"] = language
 
     total_chars = sum(len(t) for t, _ in chunk_specs)
     total_chunks = len(chunk_specs)
     source = "client pre-split" if client_presplit else "single text"
-    logger.info(
+    log(
+        "info",
         f"Generating: {total_chars} chars in {total_chunks} chunk(s) ({source}), "
-        f"voice={request.voice}, model={target_model}, temp={request.temperature}"
+        f"voice={voice}, model={target_model}, temp={temperature}",
+        {"chunks_total": total_chunks, "chars": total_chars, "model": target_model},
     )
 
-    # Runaway-generation statistics: audio samples per token. A wild chunk
-    # produces far more audio per token than the running average.
     samples_per_token_history: list[float] = list(SAMPLES_PER_TOKEN_SEED)
     std_dev_limit = OUTLIER_Z_LIMIT
     max_attempts = MAX_ATTEMPTS_PER_CHUNK
@@ -343,32 +343,38 @@ async def generate(request: GenerateRequest):
     nchannels: Optional[int] = None
     total_frames = 0
     retried_chunks = 0
+    chunks_done = 0
 
-    # Stream chunk PCM to disk instead of holding hours of audio in memory.
     with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as pcm_tmp:
         pcm_path = Path(pcm_tmp.name)
 
     try:
-        # One client for the whole request; chunks are generated sequentially
-        # to keep the backend's VRAM footprint bounded.
         async with httpx.AsyncClient(timeout=CHUNK_HTTP_TIMEOUT) as client:
             for i, (chunk, measured_tokens) in enumerate(chunk_specs):
+                check_cancel()
                 chunk_tokens = measured_tokens if measured_tokens else estimate_tokens(chunk)
                 chunk_payload = dict(base_payload, input=chunk)
 
                 attempt, is_outlier = 1, True
                 while is_outlier and attempt <= max_attempts:
+                    check_cancel()
                     try:
                         resp = await client.post(f"{AUDIOCPP_URL}/v1/audio/speech", json=chunk_payload)
                     except httpx.RequestError as exc:
-                        logger.error(f"audio.cpp request failed on chunk {i + 1}/{total_chunks}: {exc}")
+                        log(
+                            "error",
+                            f"audio.cpp request failed on chunk {i + 1}/{total_chunks}: {exc}",
+                        )
                         raise HTTPException(
                             status_code=502,
                             detail=f"Failed to communicate with audio.cpp backend: {exc}",
                         ) from exc
 
                     if resp.status_code != 200:
-                        logger.error(f"audio.cpp returned error {resp.status_code}: {resp.text}")
+                        log(
+                            "error",
+                            f"audio.cpp returned error {resp.status_code}: {resp.text}",
+                        )
                         raise HTTPException(
                             status_code=resp.status_code,
                             detail=f"audio.cpp generation error: {resp.text}",
@@ -377,7 +383,10 @@ async def generate(request: GenerateRequest):
                     try:
                         frames, sr, sw, ch = parse_wav_frames(resp.content)
                     except Exception as exc:
-                        logger.error(f"Could not parse WAV from audio.cpp response (chunk {i + 1}/{total_chunks}): {exc}")
+                        log(
+                            "error",
+                            f"Could not parse WAV from audio.cpp response (chunk {i + 1}/{total_chunks}): {exc}",
+                        )
                         raise HTTPException(
                             status_code=502,
                             detail=f"audio.cpp returned unparsable audio for chunk {i + 1}/{total_chunks}",
@@ -409,22 +418,40 @@ async def generate(request: GenerateRequest):
                     if attempt > 1:
                         retried_chunks += 1
                     flag = " !!! RETRY" if is_outlier else ""
-                    logger.info(
+                    log(
+                        "info",
                         f"  Chunk {i + 1:>3}/{total_chunks:<3} | {len(chunk):>3}c | {chunk_tokens:>3}t | "
                         f"{samples_per_token:>9,.2f} s/t | {n_samples / sr:>5.2f}s | "
-                        f"{running_avg:>9,.2f}avg | {std_dev:>6,.2f}\u03c3 | {z_score:>4.2f}z{flag}"
+                        f"{running_avg:>9,.2f}avg | {std_dev:>6,.2f}\u03c3 | {z_score:>4.2f}z{flag}",
+                        {
+                            "chunk": i + 1,
+                            "chunks_total": total_chunks,
+                            "attempt": attempt,
+                            "retry": is_outlier,
+                            "z_score": z_score,
+                        },
                     )
                     attempt += 1
 
                 samples_per_token_history.append(samples_per_token)
                 total_frames += n_samples
+                chunks_done += 1
                 with open(pcm_path, "ab") as pcm_file:
                     pcm_file.write(frames)
+                if progress_cb:
+                    progress_cb(
+                        chunks_done,
+                        total_chunks,
+                        {
+                            "chunks_done": chunks_done,
+                            "chunks_total": total_chunks,
+                            "elapsed_seconds": round(time.monotonic() - start_time, 2),
+                        },
+                    )
 
         if sample_rate is None or sampwidth is None or nchannels is None or total_frames == 0:
             raise HTTPException(status_code=500, detail="No audio generated")
 
-        # Assemble the final WAV from the streamed PCM temp file.
         wav_buf = io.BytesIO()
         with open(pcm_path, "rb") as pcm_file, wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(nchannels)
@@ -443,24 +470,262 @@ async def generate(request: GenerateRequest):
     duration = total_frames / (sample_rate * nchannels) if sample_rate else 0.0
     generation_time = time.monotonic() - start_time
     rtf = generation_time / duration if duration > 0 else 0.0
-
-    logger.info(
+    log(
+        "info",
         f"Done: {duration:.2f}s audio in {generation_time:.2f}s (RTF={rtf:.3f}x, "
-        f"{total_chunks} chunks, {retried_chunks} retried)"
+        f"{total_chunks} chunks, {retried_chunks} retried)",
     )
+    return {
+        "wav": wav_bytes,
+        "duration_seconds": duration,
+        "sample_rate": sample_rate,
+        "chunks_generated": total_chunks,
+        "retried_chunks": retried_chunks,
+        "generation_time": generation_time,
+        "rtf": rtf,
+        "model": target_model,
+    }
 
+
+@app.post("/generate")
+async def generate(request: GenerateRequest):
+    """Synchronous compatibility endpoint returning WAV bytes."""
+    if request.text is not None and request.chunks is not None:
+        raise HTTPException(status_code=400, detail="Provide either 'text' or 'chunks', not both")
+
+    if request.chunks is not None:
+        chunk_specs = [(c.text.strip(), c.tokens) for c in request.chunks]
+        chunk_specs = [(t, n) for t, n in chunk_specs if t]
+        if not chunk_specs:
+            raise HTTPException(status_code=400, detail="'chunks' must contain at least one non-empty chunk")
+        client_presplit = True
+    elif request.text is not None:
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        chunk_specs = [(text, None)]
+        client_presplit = False
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'text' or 'chunks'")
+
+    result = await synthesize_chunks(
+        chunk_specs,
+        voice=request.voice,
+        temperature=request.temperature,
+        language=request.language,
+        client_presplit=client_presplit,
+    )
     return Response(
-        content=wav_bytes,
+        content=result["wav"],
         media_type="audio/wav",
         headers={
-            "X-Duration-Seconds": f"{duration:.2f}",
-            "X-Sample-Rate": str(sample_rate),
-            "X-Chunks-Generated": str(total_chunks),
-            "X-Retried-Chunks": str(retried_chunks),
-            "X-Generation-Time": f"{generation_time:.2f}",
-            "X-RTF": f"{rtf:.3f}",
+            "X-Duration-Seconds": f"{result['duration_seconds']:.2f}",
+            "X-Sample-Rate": str(result["sample_rate"]),
+            "X-Chunks-Generated": str(result["chunks_generated"]),
+            "X-Retried-Chunks": str(result["retried_chunks"]),
+            "X-Generation-Time": f"{result['generation_time']:.2f}",
+            "X-RTF": f"{result['rtf']:.3f}",
         },
     )
+
+
+# ----------------------------------------------------------------------
+# Local runtime API (used by reeder-worker-agent inside the container)
+# ----------------------------------------------------------------------
+WORK_DIR = Path(os.getenv("WORK_DIR", "/work"))
+RUNTIME_TASKS: dict[str, dict[str, Any]] = {}
+_RUNTIME_SEQ = 0
+
+
+class RuntimeStartRequest(BaseModel):
+    kind: str = Field(default="tts")
+    payload: dict[str, Any] = Field(default_factory=dict)
+    output_path: Optional[str] = Field(
+        default=None, description="Path relative to WORK_DIR; defaults to runtime/<id>/output.wav"
+    )
+
+
+def _runtime_task_public(task: dict) -> dict:
+    return {key: value for key, value in task.items() if key != "logs"}
+
+
+def _runtime_log(task: dict, level: str, message: str, data: Any = None) -> None:
+    global _RUNTIME_SEQ
+    _RUNTIME_SEQ += 1
+    task["logs"].append(
+        {
+            "seq": _RUNTIME_SEQ,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "level": level,
+            "message": message,
+            **({"data": data} if data is not None else {}),
+        }
+    )
+
+
+def _resolve_runtime_output(task_id: str, output_path: Optional[str]) -> tuple[Path, str]:
+    relative = output_path or f"runtime/{task_id}/output.wav"
+    relative_path = Path(relative)
+    if relative_path.is_absolute():
+        try:
+            relative_path = relative_path.relative_to(WORK_DIR)
+        except ValueError:
+            raise HTTPException(400, "output_path must live under WORK_DIR")
+    root = WORK_DIR.resolve()
+    path = (root / relative_path).resolve()
+    if root not in path.parents:
+        raise HTTPException(400, "output_path escapes WORK_DIR")
+    return path, str(relative_path)
+
+
+async def _run_runtime_task(task_id: str) -> None:
+    task = RUNTIME_TASKS[task_id]
+    task["state"] = "running"
+    task["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _runtime_log(task, "info", f"Runtime task {task_id} started")
+    start = time.monotonic()
+    try:
+        payload = task["payload"]
+        if payload.get("chunks") is not None:
+            chunk_specs = [
+                (str(chunk.get("text", "")).strip(), chunk.get("tokens"))
+                for chunk in payload["chunks"]
+            ]
+            chunk_specs = [(text, tokens) for text, tokens in chunk_specs if text]
+            presplit = True
+        else:
+            text = str(payload.get("text", "")).strip()
+            chunk_specs = [(text, None)] if text else []
+            presplit = False
+        if not chunk_specs:
+            raise ValueError("Runtime tts payload must include chunks or text")
+
+        def progress(current, total, metrics):
+            task["progress"] = {
+                "phase": "tts",
+                "current": current,
+                "total": total,
+                "unit": "chunk",
+                "percent": round((current / total) * 100, 2) if total else 0.0,
+            }
+            task["metrics"] = metrics
+
+        def log_cb(level, message, data=None):
+            _runtime_log(task, level, message, data)
+
+        result = await synthesize_chunks(
+            chunk_specs,
+            voice=str(payload.get("voice", "default")),
+            temperature=float(payload.get("temperature", 0.8)),
+            language=str(payload.get("language", "Auto")),
+            client_presplit=presplit,
+            progress_cb=progress,
+            log_cb=log_cb,
+            cancel_check=lambda: bool(task.get("cancel_requested")),
+        )
+
+        output_path, relative = _resolve_runtime_output(task_id, task["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(result["wav"])
+        metrics = {
+            "duration_seconds": round(result["duration_seconds"], 3),
+            "sample_rate": result["sample_rate"],
+            "chunks_generated": result["chunks_generated"],
+            "retried_chunks": result["retried_chunks"],
+            "elapsed_seconds": round(time.monotonic() - start, 3),
+            "rtf": round(result["rtf"], 4),
+            "model": result["model"],
+            "engine": payload.get("engine"),
+        }
+        metrics_path = output_path.with_name("metrics.json")
+        metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        task["result"] = {
+            "output_path": relative,
+            "metrics_path": str(metrics_path.relative_to(WORK_DIR.resolve())),
+            "size": output_path.stat().st_size,
+            "metrics": metrics,
+        }
+        task["state"] = "completed"
+        task["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _runtime_log(task, "info", "Runtime task completed", task["result"])
+    except GenerationCancelled:
+        task["state"] = "canceled"
+        task["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _runtime_log(task, "warning", "Runtime task canceled")
+    except HTTPException as exc:
+        task["state"] = "failed"
+        task["error"] = str(exc.detail)
+        task["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _runtime_log(task, "error", f"Runtime task failed: {exc.detail}")
+    except Exception as exc:
+        task["state"] = "failed"
+        task["error"] = str(exc)
+        task["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _runtime_log(task, "error", f"Runtime task failed: {exc}")
+
+
+@app.post("/runtime/tasks", status_code=202)
+async def start_runtime_task(request: RuntimeStartRequest):
+    if request.kind != "tts":
+        raise HTTPException(400, f"Unsupported runtime task kind: {request.kind}")
+    task_id = f"rt_{int(time.time() * 1000)}_{len(RUNTIME_TASKS) + 1}"
+    task = {
+        "id": task_id,
+        "kind": request.kind,
+        "state": "queued",
+        "payload": request.payload,
+        "output_path": request.output_path,
+        "progress": {"phase": "queued", "current": 0, "total": 0, "percent": 0.0},
+        "metrics": {},
+        "error": None,
+        "result": None,
+        "logs": [],
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    RUNTIME_TASKS[task_id] = task
+    _runtime_log(task, "info", "Runtime task accepted")
+    asyncio.create_task(_run_runtime_task(task_id))
+    return {"id": task_id, "state": task["state"]}
+
+
+@app.get("/runtime/tasks/{task_id}")
+async def get_runtime_task(task_id: str):
+    task = RUNTIME_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Runtime task not found")
+    return _runtime_task_public(task)
+
+
+@app.get("/runtime/tasks/{task_id}/logs")
+async def get_runtime_logs(task_id: str, since: int = 0):
+    task = RUNTIME_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Runtime task not found")
+    entries = [entry for entry in task["logs"] if entry["seq"] > int(since)]
+    return {"entries": entries, "last_seq": entries[-1]["seq"] if entries else int(since)}
+
+
+@app.post("/runtime/tasks/{task_id}/cancel")
+async def cancel_runtime_task(task_id: str):
+    task = RUNTIME_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(404, "Runtime task not found")
+    task["cancel_requested"] = True
+    if task["state"] in ("queued", "running"):
+        task["state"] = "canceling"
+    _runtime_log(task, "warning", "Cancellation requested")
+    return _runtime_task_public(task)
+
+
+@app.get("/runtime/tasks/{task_id}/artifact")
+async def get_runtime_artifact(task_id: str):
+    task = RUNTIME_TASKS.get(task_id)
+    if task is None or not task.get("result"):
+        raise HTTPException(404, "Runtime artifact not available")
+    path = (WORK_DIR / task["result"]["output_path"]).resolve()
+    if not path.exists():
+        raise HTTPException(404, "Runtime artifact file missing")
+    return FileResponse(path, media_type="audio/wav", filename=path.name)
 
 
 def main():

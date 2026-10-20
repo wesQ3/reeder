@@ -96,12 +96,17 @@ sudo cp "$SCRIPT_DIR/bin/update-feed" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/submit-url" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/submit-text" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/bin/reeder-status" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/bin/reeder-web" "$INSTALL_DIR/bin/"
+sudo cp "$SCRIPT_DIR/bin/reeder-orchestrator" "$INSTALL_DIR/bin/"
 sudo cp "$SCRIPT_DIR/templates/index.html" "$INSTALL_DIR/templates/"
 sudo cp "$SCRIPT_DIR/templates/bookmarklet.html" "$INSTALL_DIR/templates/"
+sudo rm -rf "$INSTALL_DIR/reeder"
+sudo cp -a "$SCRIPT_DIR/reeder" "$INSTALL_DIR/reeder"
 sudo chmod +x "$INSTALL_DIR/bin/"*
 
 # Copy pyproject.toml for uv
 sudo cp "$SCRIPT_DIR/pyproject.toml" "$INSTALL_DIR/pyproject.toml"
+sudo cp "$SCRIPT_DIR/uv.lock" "$INSTALL_DIR/uv.lock"
 
 # Copy config if not exists
 if [[ ! -f "$INSTALL_DIR/config.toml" ]]; then
@@ -127,6 +132,7 @@ echo "=== Installing systemd units ==="
 sudo cp "$SCRIPT_DIR/systemd/reeder.path" /etc/systemd/system/
 sudo cp "$SCRIPT_DIR/systemd/reeder.service" /etc/systemd/system/
 sudo cp "$SCRIPT_DIR/systemd/reeder.timer" /etc/systemd/system/
+sudo cp "$SCRIPT_DIR/systemd/reeder-orchestrator.service" /etc/systemd/system/
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -142,6 +148,13 @@ echo "reeder.path enabled and started"
 # sudo systemctl enable reeder.timer
 # sudo systemctl start reeder.timer
 
+# Pull mode: after setting jobs.mode = "pull" in config.toml, disable the
+# legacy inbox units and enable the web + orchestrator units:
+#   sudo systemctl disable --now reeder.path reeder.timer
+#   sudo systemctl enable --now reeder-web reeder-orchestrator
+# The orchestrator is installed but not enabled automatically while the
+# default config remains in push mode.
+
 echo ""
 echo "=== Installation complete ==="
 echo ""
@@ -154,13 +167,17 @@ echo "2. Add a voice file:"
 echo "   sudo cp your-voice.wav $INSTALL_DIR/voices/default.wav"
 echo "   sudo chown reeder:reeder $INSTALL_DIR/voices/default.wav"
 echo ""
-echo "3. (Optional) Set up Caddy for HTTPS:"
+echo "3. For pull mode, create /etc/reeder/worker.env with REEDER_WORKER_TOKEN"
+echo "   (see config.worker.env.example), set jobs.mode = \"pull\", then enable"
+echo "   reeder-web and reeder-orchestrator."
+echo ""
+echo "4. (Optional) Set up Caddy for HTTPS:"
 echo "   sudo cp $SCRIPT_DIR/Caddyfile /etc/caddy/Caddyfile"
 echo "   sudo systemctl enable --now caddy"
 echo ""
-echo "4. Test with a job:"
+echo "5. Test with a job:"
 echo "   echo '{\"type\":\"text\",\"text\":\"Hello world\",\"title\":\"Test\"}' | sudo -u reeder tee $INSTALL_DIR/inbox/\$(date +%s)-test.json"
 echo ""
-echo "5. Monitor:"
+echo "6. Monitor:"
 echo "   journalctl -u reeder -f"
 echo "   cat $INSTALL_DIR/var/status.txt"

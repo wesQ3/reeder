@@ -14,6 +14,8 @@ Environment=UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv
 Environment=UV_CACHE_DIR=/var/lib/reeder/.cache/uv
 Environment=HF_HOME=/var/lib/reeder/.cache/huggingface
 Environment=REEDER_WEB_HOST=0.0.0.0
+# Shared worker token for /api/v1/*.
+EnvironmentFile=-/etc/reeder/worker.env
 Restart=on-failure
 RestartSec=5
 

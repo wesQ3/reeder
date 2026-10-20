@@ -17,6 +17,15 @@
     handle /bookmarklet {
         reverse_proxy localhost:8081
     }
+    handle /jobs* {
+        reverse_proxy localhost:8081
+    }
+    handle /api/* {
+        reverse_proxy localhost:8081
+    }
+    handle /healthz {
+        reverse_proxy localhost:8081
+    }
     handle / {
         reverse_proxy localhost:8081
     }

@@ -1,0 +1,29 @@
+[Unit]
+Description=Reeder pull-worker host orchestrator
+After=network.target
+# The web service and orchestrator may share the SQLite WAL database.
+Wants=reeder-web.service
+
+[Service]
+Type=simple
+User=reeder
+Group=reeder
+WorkingDirectory=/var/lib/reeder
+ExecStart=/usr/lib/reeder/bin/reeder-orchestrator --config /etc/reeder/config.toml
+Environment=HOME=/var/lib/reeder
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv
+Environment=UV_CACHE_DIR=/var/lib/reeder/.cache/uv
+Environment=HF_HOME=/var/lib/reeder/.cache/huggingface
+# Shared worker token for /api/v1/* (root-readable, do not commit).
+EnvironmentFile=-/etc/reeder/worker.env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/reeder
+
+[Install]
+WantedBy=multi-user.target

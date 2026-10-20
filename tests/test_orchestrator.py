@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from reeder.orchestrator import Orchestrator
 from reeder.store import store_from_config
 

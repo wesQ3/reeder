@@ -1,0 +1,17 @@
+[Unit]
+Description=Reeder pull-worker host orchestrator (dev)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/code/reeder/bin/reeder-orchestrator --config %h/code/reeder/config.dev.toml
+Environment="REEDER_CONFIG=%h/code/reeder/config.dev.toml"
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=%h/code/reeder
+# Put REEDER_WORKER_TOKEN in ~/.config/reeder/worker.env for the worker API.
+EnvironmentFile=-%h/.config/reeder/worker.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

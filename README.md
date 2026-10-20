@@ -135,6 +135,24 @@ Subscribe to `https://your-hostname/feed.xml` in any podcast app:
 - AntennaPod
 - Apple Podcasts
 
+## Pull-worker mode
+
+The pull-worker path lets the GPU rig stay offline until it chooses to poll the
+host. Jobs are stored in SQLite, the host orchestrator runs
+`fetch_extract`/`finalize_audio`, and the rig agent claims `tts` tasks over
+outbound HTTPS, forwards progress/logs, uploads a WAV, and optionally suspends.
+
+Enable it by setting `jobs.mode = "pull"` (see `config.toml`), creating
+`/etc/reeder/worker.env` with `REEDER_WORKER_TOKEN`, disabling
+`reeder.path`/`reeder.timer`, and enabling `reeder-web` plus
+`reeder-orchestrator`. The old inbox path remains available with
+`jobs.mode = "push"`.
+
+See [docs/pull-worker.md](docs/pull-worker.md) for the API/agent details and
+[docs/pull-worker-deploy.md](docs/pull-worker-deploy.md) for staged deployment
+and rollback instructions. Worker agent sources are in `worker/agent/` and the
+local runtime API is documented in `worker/tts_api.py`.
+
 ## Architecture
 
 - **systemd.path**: Watches inbox for new job files

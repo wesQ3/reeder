@@ -1,0 +1,38 @@
+# Reeder pull-worker agent configuration
+# Install as /etc/reeder-worker/agent.toml (root-readable; do not commit tokens).
+
+[host]
+url = "https://reeder.example.ts.net"
+# The agent reads the shared token from this environment variable.
+token_env = "REEDER_WORKER_TOKEN"
+wait_seconds = 300
+
+[worker]
+id = "nvidia-rig"
+name = "Bazzite GPU rig"
+capabilities = ["tts", "tts:qwen3", "gpu:cuda"]
+# Optional: advertised voices/models for host scheduling and display.
+# inventory = { voices = ["default"], models = ["qwen3-tts"] }
+poll_wait_seconds = 30
+heartbeat_seconds = 15
+lease_seconds = 180
+max_tasks_per_wake = 1
+max_runtime_seconds = 21600
+max_task_runtime_seconds = 18000
+idle_grace_seconds = 300
+# none | exit | suspend | a command string/array
+on_idle = "none"
+suspend_command = ["systemctl", "suspend"]
+
+[paths]
+work_dir = "/var/lib/reeder-worker"
+compose_file = "/etc/reeder-worker/docker-compose.yml"
+
+[container]
+start = true
+stop = true
+start_timeout_seconds = 120
+compose_command = ["docker", "compose"]
+
+[runtime]
+url = "http://127.0.0.1:8100"

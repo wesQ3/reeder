@@ -11,6 +11,7 @@ ExecStart=%h/code/reeder/bin/reeder-web
 Environment="REEDER_CONFIG=%h/code/reeder/config.dev.toml"
 Environment="REEDER_WEB_HOST=127.0.0.1"
 Environment="REEDER_WEB_PORT=8081"
+EnvironmentFile=-%h/.config/reeder/worker.env
 
 # Working directory
 WorkingDirectory=%h/code/reeder

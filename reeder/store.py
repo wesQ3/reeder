@@ -1144,7 +1144,18 @@ class Store:
                 ).fetchone()
                 if existing:
                     conn.commit()
-                    return self._decode_artifact(dict(existing))
+                    item = self._decode_artifact(dict(existing))
+                    existing_final = self.artifacts_dir / item["path"]
+                    existing_part = self.artifacts_dir / (item["path"] + ".part")
+                    if existing_final.exists():
+                        item["uploaded_size"] = existing_final.stat().st_size
+                        item["offset"] = int(item["size"])
+                    else:
+                        item["uploaded_size"] = (
+                            existing_part.stat().st_size if existing_part.exists() else 0
+                        )
+                        item["offset"] = item["uploaded_size"]
+                    return item
 
                 artifact_id = new_artifact_id()
                 rel = (

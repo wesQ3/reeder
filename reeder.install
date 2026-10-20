@@ -16,6 +16,8 @@ post_install() {
     install -dm755 -o reeder -g reeder /var/lib/reeder/www/audio
     install -dm750 -o reeder -g reeder /var/lib/reeder/voices
     install -dm750 -o reeder -g reeder /var/lib/reeder/var
+    install -dm750 -o reeder -g reeder /var/lib/reeder/var/artifacts
+    install -dm750 -o reeder -g reeder /var/lib/reeder/var/logs
 
     # Symlink config to data dir
     ln -sf /etc/reeder/config.toml /var/lib/reeder/config.toml
@@ -42,7 +44,9 @@ post_install() {
     echo "Next steps:"
     echo "  1. Edit /etc/reeder/config.toml"
     echo "  2. Copy voice files to /var/lib/reeder/voices/"
-    echo "  3. Enable services: systemctl enable --now reeder.path reeder-web"
+    echo "  3a. Push mode: systemctl enable --now reeder.path reeder-web"
+    echo "  3b. Pull mode: create /etc/reeder/worker.env, set jobs.mode = \"pull\","
+    echo "      disable reeder.path/timer, then enable reeder-web reeder-orchestrator"
     echo "  4. (Optional) Configure Caddy with /etc/reeder/Caddyfile"
     echo ""
 }
@@ -57,12 +61,15 @@ post_upgrade() {
     if systemctl is-active --quiet reeder.path; then
         systemctl restart reeder.path
     fi
+    if systemctl is-active --quiet reeder-orchestrator; then
+        systemctl restart reeder-orchestrator
+    fi
 }
 
 pre_remove() {
     # Stop and disable services
-    systemctl stop reeder.path reeder-web reeder.service 2>/dev/null || true
-    systemctl disable reeder.path reeder-web 2>/dev/null || true
+    systemctl stop reeder.path reeder-web reeder-orchestrator reeder.service 2>/dev/null || true
+    systemctl disable reeder.path reeder-web reeder-orchestrator 2>/dev/null || true
 }
 
 post_remove() {

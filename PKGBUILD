@@ -18,6 +18,7 @@ package() {
     install -Dm755 bin/process-job "$pkgdir/usr/lib/reeder/bin/process-job"
     install -Dm755 bin/update-feed "$pkgdir/usr/lib/reeder/bin/update-feed"
     install -Dm755 bin/reeder-web "$pkgdir/usr/lib/reeder/bin/reeder-web"
+    install -Dm755 bin/reeder-orchestrator "$pkgdir/usr/lib/reeder/bin/reeder-orchestrator"
     install -Dm755 bin/submit-url "$pkgdir/usr/lib/reeder/bin/submit-url"
     install -Dm755 bin/submit-text "$pkgdir/usr/lib/reeder/bin/submit-text"
     install -Dm755 bin/reeder-status "$pkgdir/usr/lib/reeder/bin/reeder-status"
@@ -42,9 +43,16 @@ package() {
     install -Dm644 systemd-pkg/reeder.service "$pkgdir/usr/lib/systemd/system/reeder.service"
     install -Dm644 systemd-pkg/reeder-web.service "$pkgdir/usr/lib/systemd/system/reeder-web.service"
     install -Dm644 systemd-pkg/reeder.path "$pkgdir/usr/lib/systemd/system/reeder.path"
+    install -Dm644 systemd-pkg/reeder-orchestrator.service "$pkgdir/usr/lib/systemd/system/reeder-orchestrator.service"
 
     # Install docs
     install -Dm644 README.md "$pkgdir/usr/share/doc/reeder/README.md"
+    install -Dm644 config.worker.env.example "$pkgdir/usr/share/doc/reeder/config.worker.env.example"
+    install -Dm644 docs/pull-worker.md "$pkgdir/usr/share/doc/reeder/pull-worker.md"
+    install -Dm644 docs/pull-worker-deploy.md "$pkgdir/usr/share/doc/reeder/pull-worker-deploy.md"
+    install -Dm755 worker/reeder-worker-agent "$pkgdir/usr/lib/reeder/worker/reeder-worker-agent"
+    cp -a worker/agent "$pkgdir/usr/lib/reeder/worker/"
+    install -Dm644 worker/agent.toml.example "$pkgdir/usr/lib/reeder/worker/agent.toml.example"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/reeder/LICENSE"
 
     # Install the install script

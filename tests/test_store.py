@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-
 import pytest
 
 from reeder.store import ConflictError, Store, ValidationError, store_from_config
@@ -56,9 +54,7 @@ def test_claim_has_single_winner(config):
 def test_lease_expiry_retries_then_fails(config):
     store = make_store(config)
     job, task = make_text_job(store)
-    claimed = store.claim_task(
-        "rig", capabilities=["tts", "tts:qwen3"], lease_seconds=60
-    )
+    store.claim_task("rig", capabilities=["tts", "tts:qwen3"], lease_seconds=60)
 
     with sqlite3.connect(store.db_path) as conn:
         conn.execute(
@@ -199,3 +195,41 @@ def test_complete_is_idempotent(config):
     )
     assert first["status"] == second["status"] == "completed"
     assert store.get_job(job["id"])["tasks"][0]["attempt"] == 1
+
+
+def test_artifact_reinit_reports_resume_offset_and_completed_size(config):
+    store = make_store(config)
+    _, task = make_text_job(store)
+    claimed = store.claim_task("rig", capabilities=["tts", "tts:qwen3"])
+    artifact = store.init_artifact(
+        task["id"],
+        worker_id="rig",
+        attempt=claimed["attempt"],
+        lease_token=claimed["lease_token"],
+        filename="output.wav",
+        size=10,
+        sha256=hashlib.sha256(b"0123456789").hexdigest(),
+    )
+    store.upload_artifact(artifact["id"], offset=0, data=b"01234")
+    resumed = store.init_artifact(
+        task["id"],
+        worker_id="rig",
+        attempt=claimed["attempt"],
+        lease_token=claimed["lease_token"],
+        filename="output.wav",
+        size=10,
+        sha256=hashlib.sha256(b"0123456789").hexdigest(),
+    )
+    assert resumed["offset"] == 5
+    store.upload_artifact(artifact["id"], offset=5, data=b"56789")
+    store.complete_artifact(artifact["id"])
+    completed = store.init_artifact(
+        task["id"],
+        worker_id="rig",
+        attempt=claimed["attempt"],
+        lease_token=claimed["lease_token"],
+        filename="output.wav",
+        size=10,
+        sha256=hashlib.sha256(b"0123456789").hexdigest(),
+    )
+    assert completed["offset"] == 10

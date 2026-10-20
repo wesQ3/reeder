@@ -5,7 +5,6 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 
-from reeder.config import load_config
 from reeder.web import create_app
 
 TOKEN = "test-worker-token"

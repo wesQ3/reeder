@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -93,7 +93,7 @@ def _submit(config: dict, store: Store, request: dict) -> dict:
         return {
             "id": Path(filename).stem,
             "status": "queued",
-            "detail_url": f"/status",
+            "detail_url": "/status",
             "legacy_inbox_file": filename,
         }
     job = store.create_job(request)
@@ -166,7 +166,12 @@ def create_app(config_path: Path | str | None = None) -> FastAPI:
         return _render_form(config)
 
     @app.get("/add")
-    def add_get(url: str = "", title: str = "", voice: str = "default", request: Request = None):
+    def add_get(
+        request: Request,
+        url: str = "",
+        title: str = "",
+        voice: str = "default",
+    ):
         if not url:
             raise HTTPException(400, "Missing 'url' parameter")
         try:
@@ -175,7 +180,7 @@ def create_app(config_path: Path | str | None = None) -> FastAPI:
             )
         except (StoreError, ValueError) as exc:
             raise handle_store_error(exc)
-        accept = request.headers.get("Accept", "") if request else ""
+        accept = request.headers.get("Accept", "")
         if "text/html" in accept:
             message = f'<p class="success">✅ Queued: {html.escape(result["id"])}</p>'
             return HTMLResponse(_render_form(config, message))
