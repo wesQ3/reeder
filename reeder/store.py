@@ -206,10 +206,17 @@ PIPELINES = {
 
 
 class Store:
-    def __init__(self, db_path: Path, artifacts_dir: Path, logs_dir: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        artifacts_dir: Path,
+        logs_dir: Path,
+        max_artifact_bytes: int = 4 * 1024 * 1024 * 1024,
+    ):
         self.db_path = Path(db_path)
         self.artifacts_dir = Path(artifacts_dir)
         self.logs_dir = Path(logs_dir)
+        self.max_artifact_bytes = int(max_artifact_bytes)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1129,8 +1136,10 @@ class Store:
             size = int(size)
         except (TypeError, ValueError):
             raise ValidationError("Artifact size must be an integer")
-        if size < 0 or size > 4 * 1024 * 1024 * 1024:
-            raise ValidationError("Artifact size out of range")
+        if size < 0 or size > self.max_artifact_bytes:
+            raise ValidationError(
+                f"Artifact size out of range (max {self.max_artifact_bytes} bytes)"
+            )
 
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1524,4 +1533,11 @@ def store_from_config(config: dict | None = None) -> Store:
     from reeder.config import get_paths
 
     paths = get_paths(config)
-    return Store(paths["db"], paths["artifacts"], paths["logs"])
+    worker_api = config.get("jobs", {}).get("worker_api", {})
+    max_artifact_bytes = int(worker_api.get("max_artifact_mb", 4096)) * 1024 * 1024
+    return Store(
+        paths["db"],
+        paths["artifacts"],
+        paths["logs"],
+        max_artifact_bytes=max_artifact_bytes,
+    )
