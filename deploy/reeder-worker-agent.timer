@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodic Reeder pull worker wake window
+
+[Timer]
+# Adjust to the rig's desired polling schedule.
+OnBootSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=5min
+Persistent=true
+# RTC wake is rig-specific (see PULL_WORKER.PLAN.md section 15). Once verified
+# on Bazzite, uncomment:
+# WakeSystem=true
+
+[Install]
+WantedBy=timers.target

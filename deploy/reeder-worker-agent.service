@@ -1,0 +1,16 @@
+[Unit]
+Description=Reeder pull worker agent
+After=network-online.target docker.service
+Wants=network-online.target
+# Do not run concurrently with a game/session policy you have not decided on.
+# See PULL_WORKER.PLAN.md section 15.
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/reeder-worker/worker.env
+ExecStart=/opt/reeder-worker/reeder-worker-agent --config /etc/reeder-worker/agent.toml
+WorkingDirectory=/opt/reeder-worker
+User=root
+# Compose/GPU access normally requires root or a docker-group user.
+# Restart is intentionally omitted: the agent drains and exits/suspends.
+TimeoutStartSec=infinity

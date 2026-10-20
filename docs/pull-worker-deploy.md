@@ -227,24 +227,21 @@ and exits (`on_idle = "none"` in the example). Change `on_idle` to `"suspend"`
 only after suspend permissions and wake scheduling are configured; those are
 rig-administration tasks documented in `PULL_WORKER.PLAN.md` §15.
 
-Example systemd unit for the rig:
+Example systemd units are in `deploy/reeder-worker-agent.service` and
+`deploy/reeder-worker-agent.timer`:
 
-```ini
-[Unit]
-Description=Reeder pull worker agent
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-EnvironmentFile=/etc/reeder-worker/worker.env
-ExecStart=/opt/reeder-worker/reeder-worker-agent --config /etc/reeder-worker/agent.toml
-User=root
-# The compose container needs Docker/GPU access; adjust to your rig policy.
+```bash
+sudo install -m 0644 deploy/reeder-worker-agent.service \
+  /etc/systemd/system/reeder-worker-agent.service
+sudo install -m 0644 deploy/reeder-worker-agent.timer \
+  /etc/systemd/system/reeder-worker-agent.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now reeder-worker-agent.timer
 ```
 
 Use a timer (or the rig's wake mechanism) to start it. Do not add
-`Restart=always`: the agent is designed to drain and exit/suspend.
+`Restart=always`: the agent is designed to drain and exit/suspend. RTC
+`WakeSystem=true` is left as a commented rig-specific step.
 
 ## Rollback
 
