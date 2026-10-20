@@ -19,6 +19,7 @@ package() {
     install -Dm755 bin/update-feed "$pkgdir/usr/lib/reeder/bin/update-feed"
     install -Dm755 bin/reeder-web "$pkgdir/usr/lib/reeder/bin/reeder-web"
     install -Dm755 bin/reeder-orchestrator "$pkgdir/usr/lib/reeder/bin/reeder-orchestrator"
+    install -Dm755 bin/reeder-import-inbox "$pkgdir/usr/lib/reeder/bin/reeder-import-inbox"
     install -Dm755 bin/submit-url "$pkgdir/usr/lib/reeder/bin/submit-url"
     install -Dm755 bin/submit-text "$pkgdir/usr/lib/reeder/bin/submit-text"
     install -Dm755 bin/reeder-status "$pkgdir/usr/lib/reeder/bin/reeder-status"

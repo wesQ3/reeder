@@ -163,6 +163,10 @@ REEDER_WORKER_TOKEN=... ./deploy/verify-pull-host.sh http://127.0.0.1:8081
 
 ## Legacy compatibility
 
+Use `reeder-import-inbox` (or its `--dry-run` form) once when switching from
+push to pull to move pending `inbox/*.json` jobs into SQLite. Existing
+`done/*.json` history needs no import: the feed generator continues to read it.
+
 - `done/{job_id}.json` and `www/feed.xml` are still written by
   `finalize_audio`.
 - Existing audio URLs under `/audio/` are unchanged.

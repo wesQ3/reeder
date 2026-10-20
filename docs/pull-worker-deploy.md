@@ -106,6 +106,12 @@ On the host:
 # Stop the legacy trigger before switching modes.
 sudo systemctl disable --now reeder.path reeder.timer 2>/dev/null || true
 
+# If any inbox jobs are still pending (push mode had not drained yet), import
+# them into SQLite before switching. The importer moves successful files to
+# /var/lib/reeder/var/imported/ so they cannot be processed twice.
+sudo /usr/lib/reeder/bin/reeder-import-inbox --dry-run
+sudo /usr/lib/reeder/bin/reeder-import-inbox
+
 # Add/merge this in /etc/reeder/config.override.toml (or edit config.toml):
 sudo tee /etc/reeder/config.override.toml >/dev/null <<'EOF'
 [jobs]
@@ -254,7 +260,9 @@ sudo systemctl enable --now reeder.path reeder.timer
 Pending SQLite jobs remain in `var/reeder.db`; they are not deleted by rolling
 back. To process them later, re-enable pull mode. Existing `inbox/*.json` files
 are still handled by `process-job` in push mode, but should never be processed
-by both paths at once.
+by both paths at once. Pending inbox files can be moved into the pull queue
+with `reeder-import-inbox`. Existing `done/*.json` history is left in place and
+continues to feed `www/feed.xml`; no import is required.
 
 ## Troubleshooting
 
