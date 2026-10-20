@@ -63,13 +63,18 @@ def get_paths(config: dict) -> dict[str, Path]:
         config_dir = config.get("_config_path", Path.cwd()).parent
         base = (config_dir / base).resolve()
 
+    paths_config = config["paths"]
     return {
         "base": base,
-        "inbox": base / config["paths"]["inbox"],
-        "processing": base / config["paths"]["processing"],
-        "done": base / config["paths"]["done"],
-        "audio": base / config["paths"]["audio"],
-        "www": base / config["paths"]["www"],
-        "voices": base / config["paths"]["voices"],
-        "status": base / config["paths"]["status_file"],
+        "inbox": base / paths_config["inbox"],
+        "processing": base / paths_config["processing"],
+        "done": base / paths_config["done"],
+        "audio": base / paths_config["audio"],
+        "www": base / paths_config["www"],
+        "voices": base / paths_config["voices"],
+        "status": base / paths_config["status_file"],
+        # Pull-worker additions. Defaults keep older config files working.
+        "db": base / paths_config.get("db", "var/reeder.db"),
+        "artifacts": base / paths_config.get("artifacts", "var/artifacts"),
+        "logs": base / paths_config.get("logs", "var/logs"),
     }

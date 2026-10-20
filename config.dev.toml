@@ -12,6 +12,27 @@ audio = "www/audio"
 www = "www"
 voices = "voices"
 status_file = "var/status.txt"
+db = "var/reeder.db"
+artifacts = "var/artifacts"
+logs = "var/logs"
+
+[jobs]
+# push = legacy inbox/systemd.path path; pull = SQLite queue + orchestrator.
+# Use "dual" during migration only if the legacy path unit is disabled.
+mode = "push"
+lease_seconds = 180
+heartbeat_seconds = 15
+claim_wait_seconds = 30
+max_attempts = 2
+retention_days = 90
+local_tts_fallback = false
+
+[jobs.worker_api]
+# Name of the environment variable holding the shared worker bearer token.
+token_env = "REEDER_WORKER_TOKEN"
+max_artifact_mb = 4096
+# Comma-separated extra origins are not needed for same-origin form use.
+cors_origins = ""
 
 [tts]
 default_voice = "default.safetensors"

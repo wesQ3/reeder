@@ -10,16 +10,21 @@ dependencies = [
     "torch",
     "soundfile",
     "numpy",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff",
+    "pytest>=8",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
 reeder-process = "reeder.cli:process_main"
 reeder-feed = "reeder.cli:feed_main"
+reeder-orchestrator = "reeder.orchestrator:main"
 
 [dependency-groups]
 dev = ["ruff"]

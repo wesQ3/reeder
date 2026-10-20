@@ -1,279 +1,54 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
-"""
-Reeder Web - Simple HTTP endpoint for submitting jobs.
+"""Reeder Web - FastAPI UI and pull-worker API.
 
-Endpoints:
-  GET  /           - Simple HTML form
-  GET  /add?url=X  - Add URL job (for bookmarklets/shortcuts)
-  POST /add        - Add job via form submission
-  GET  /status     - Quick status check
+The original form, bookmarklet, /add, /status, audio, and feed routes remain
+compatible. Worker-facing routes live under /api/v1 and require a bearer token.
 """
 
-import json
+import argparse
 import os
-import re
 import sys
-from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
-# Allow importing the local reeder package from /usr/lib/reeder.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from reeder.config import load_config as _load_config, get_paths as _get_paths
 
-
-def load_config():
-    """Load config and return paths dict for the web server."""
-    try:
-        config = _load_config()
-        paths = _get_paths(config)
-        return {
-            "inbox": paths["inbox"],
-            "processing": paths["processing"],
-            "done": paths["done"],
-            "status_file": paths["status"],
-            "voices": paths["voices"],
-        }
-    except FileNotFoundError:
-        base = Path("/var/lib/reeder")
-        return {
-            "inbox": base / "inbox",
-            "processing": base / "processing",
-            "done": base / "done",
-            "status_file": base / "var/status.txt",
-            "voices": base / "voices",
-        }
-
-
-def enumerate_voices():
-    """Find available voice files and return list of names."""
-    voices_dir = PATHS.get("voices")
-    if not voices_dir or not voices_dir.exists():
-        return ["default"]
-    
-    voices = []
-    for ext in ("*.safetensors", "*.wav"):
-        for path in voices_dir.glob(ext):
-            name = path.stem
-            if name not in voices:
-                voices.append(name)
-    
-    # Sort with default first
-    voices.sort(key=lambda x: (x != "default", x))
-    return voices if voices else ["default"]
-
-
-PATHS = load_config()
-INBOX = PATHS["inbox"]
-VOICES = enumerate_voices()
-
-# Build voice options HTML at startup
-VOICE_OPTIONS = "\n".join(
-    f'        <option value="{v}">{v}</option>' for v in VOICES
-)
-
-TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
-
-
-def load_template(name: str) -> str:
-    """Load an HTML template from the templates directory."""
-    template_path = TEMPLATE_DIR / name
-    if not template_path.exists():
-        raise FileNotFoundError(f"Template not found: {template_path}")
-    return template_path.read_text(encoding="utf-8")
-
-
-HTML_FORM_TEMPLATE = load_template("index.html")
-BOOKMARKLET_TEMPLATE = load_template("bookmarklet.html")
-
-
-def render_form(message: str) -> str:
-    """Render the main form HTML with dynamic content."""
-    return (
-        HTML_FORM_TEMPLATE.replace("{{MESSAGE}}", message)
-        .replace("{{VOICE_OPTIONS}}", VOICE_OPTIONS)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Reeder web service")
+    parser.add_argument("--config", help="Path to config.toml")
+    parser.add_argument(
+        "--host", default=os.environ.get("REEDER_WEB_HOST", "127.0.0.1")
     )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("REEDER_WEB_PORT", "8081"))
+    )
+    parser.add_argument("--reload", action="store_true", help="Development auto-reload")
+    args = parser.parse_args()
 
+    if args.config:
+        os.environ["REEDER_CONFIG"] = str(Path(args.config).resolve())
 
-def slugify(text: str, max_len: int = 50) -> str:
-    """Convert text to a URL-safe slug."""
-    text = re.sub(r"https?://", "", text)
-    text = re.sub(r"[^a-zA-Z0-9]+", "-", text)
-    return text[:max_len].strip("-")
-
-
-def create_job(url: str = "", title: str = "", voice: str = "default", text: str = "", job_type: str = "url") -> str:
-    """Create a job file and return the filename."""
-    timestamp = int(datetime.now().timestamp())
-    slug = slugify(title or url or "text")
-    filename = f"{timestamp}-{slug}.json"
-    
-    if job_type == "text" and text:
-        job = {"type": "text", "text": text}
-    else:
-        job = {"type": "url", "url": url}
-    
-    if title:
-        job["title"] = title
-    if voice and voice != "default":
-        job["voice"] = voice
-        job["title"] = title
-    if voice and voice != "default":
-        job["voice"] = voice
-    
-    job_path = INBOX / filename
-    INBOX.mkdir(parents=True, exist_ok=True)
-    
-    with open(job_path, "w") as f:
-        json.dump(job, f, indent=2)
-    
-    return filename
-
-
-class ReederHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        print(f"[{self.address_string()}] {format % args}")
-    
-    def send_html(self, content: str, status: int = 200):
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(content.encode())
-    
-    def send_text(self, content: str, status: int = 200):
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(content.encode())
-    
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        params = parse_qs(parsed.query)
-        
-        if path == "/":
-            self.send_html(render_form(""))
-        
-        elif path == "/add":
-            url = params.get("url", [""])[0]
-            title = params.get("title", [""])[0]
-            voice = params.get("voice", ["default"])[0]
-            
-            if not url:
-                self.send_text("Error: missing 'url' parameter", 400)
-                return
-            
-            try:
-                filename = create_job(url, title, voice)
-                # Check Accept header for response format
-                if "text/html" in self.headers.get("Accept", ""):
-                    msg = f'<p class="success">✅ Queued: {filename}</p>'
-                    self.send_html(render_form(msg))
-                else:
-                    self.send_text(f"Queued: {filename}")
-            except Exception as e:
-                self.send_text(f"Error: {e}", 500)
-        
-        elif path == "/status":
-            try:
-                inbox_count = len(list(PATHS["inbox"].glob("*.json")))
-                processing_count = len(list(PATHS["processing"].glob("*.json")))
-                done_count = len(list(PATHS["done"].glob("*.json")))
-                failed_count = len(list(PATHS["done"].glob("FAILED-*.json")))
-                
-                lines = [f"Inbox: {inbox_count} job(s)"]
-                
-                if processing_count > 0:
-                    lines.append(f"Processing: {processing_count} job(s)")
-                
-                # Read current status from status file
-                status_file = PATHS["status_file"]
-                if status_file.exists():
-                    with open(status_file) as f:
-                        status_lines = f.read().strip().split("\n")
-                    if len(status_lines) >= 2:
-                        lines.append(f"Current: {status_lines[1]}")
-                        lines.append(f"Updated: {status_lines[0]}")
-                
-                lines.append(f"Completed: {done_count - failed_count}")
-                if failed_count > 0:
-                    lines.append(f"Failed: {failed_count}")
-                lines.append("OK")
-                
-                self.send_text("\n".join(lines))
-            except Exception as e:
-                self.send_text(f"Error: {e}", 500)
-        
-        elif path == "/bookmarklet":
-            # Get the host from request
-            host = self.headers.get("Host", "localhost:8081")
-            scheme = "https" if "443" in host else "http"
-            base_url = f"{scheme}://{host}"
-            content = BOOKMARKLET_TEMPLATE.replace("{{REEDER_URL}}", base_url)
-            self.send_html(content)
-        
-        else:
-            self.send_text("Not found", 404)
-    
-    def do_POST(self):
-        if self.path != "/add":
-            self.send_text("Not found", 404)
-            return
-        
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode()
-        params = parse_qs(body)
-        
-        job_type = params.get("type", ["url"])[0]
-        url = params.get("url", [""])[0]
-        title = params.get("title", [""])[0]
-        voice = params.get("voice", ["default"])[0]
-        text = params.get("text", [""])[0]
-        
-        # Validate based on job type
-        if job_type == "text":
-            if not text:
-                msg = '<p class="error">❌ Error: Text is required</p>'
-                self.send_html(render_form(msg), 400)
-                return
-            if not title:
-                msg = '<p class="error">❌ Error: Title is required for text jobs</p>'
-                self.send_html(render_form(msg), 400)
-                return
-        else:
-            if not url:
-                msg = '<p class="error">❌ Error: URL is required</p>'
-                self.send_html(render_form(msg), 400)
-                return
-        
-        try:
-            filename = create_job(url=url, title=title, voice=voice, text=text, job_type=job_type)
-            msg = f'<p class="success">✅ Queued: {filename}</p>'
-            self.send_html(render_form(msg))
-        except Exception as e:
-            msg = f'<p class="error">❌ Error: {e}</p>'
-            self.send_html(render_form(msg), 500)
-
-
-def main():
-    host = os.environ.get("REEDER_WEB_HOST", "127.0.0.1")
-    port = int(os.environ.get("REEDER_WEB_PORT", "8081"))
-    
-    print(f"Reeder Web starting on http://{host}:{port}")
-    print(f"Inbox: {INBOX}")
-    print(f"Voices: {', '.join(VOICES)}")
-    
-    server = HTTPServer((host, port), ReederHandler)
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-        server.shutdown()
+        import uvicorn
+    except ImportError:
+        sys.stderr.write(
+            "uvicorn is not installed. Run `uv sync` in the Reeder install directory.\n"
+        )
+        raise SystemExit(1)
+
+    from reeder.web import create_app
+
+    app = create_app(args.config)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level=os.environ.get("REEDER_LOG_LEVEL", "info"),
+    )
 
 
 if __name__ == "__main__":
