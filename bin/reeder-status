@@ -1,102 +1,196 @@
-#!/bin/bash
-# Show Reeder queue status
-# Usage: reeder-status
+#!/usr/bin/env python3
+"""Show Reeder queue/worker status for push or pull mode."""
 
-set -euo pipefail
+from __future__ import annotations
 
-# Resolve base dir from config
-get_base_dir() {
-    local config="${REEDER_CONFIG:-}"
-    if [[ -z "$config" ]]; then
-        # Search standard locations
-        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        for candidate in "$script_dir/../config.toml" "/etc/reeder/config.toml" "$HOME/.config/reeder/config.toml"; do
-            if [[ -f "$candidate" ]]; then
-                config="$candidate"
-                break
-            fi
-        done
-    fi
-    
-    if [[ -z "$config" ]] || [[ ! -f "$config" ]]; then
-        echo "/var/lib/reeder"  # fallback
-        return
-    fi
-    
-    # Parse TOML with Python
-    python3 -c "
-import tomllib
+import json
+import sqlite3
+import subprocess
+import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
-with open('$config', 'rb') as f:
-    cfg = tomllib.load(f)
-print(cfg['paths']['base_dir'])
-"
-}
 
-REEDER_DIR="${REEDER_DIR:-$(get_base_dir)}"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-echo "=== Reeder Status ==="
-echo ""
+from _submit_lib import api_url, base_dir, load_config
 
-# Current status
-if [[ -f "$REEDER_DIR/var/status.txt" ]]; then
-    echo "Current: $(tail -1 "$REEDER_DIR/var/status.txt")"
-    echo "Updated: $(head -1 "$REEDER_DIR/var/status.txt")"
-else
-    echo "Current: Unknown (no status file)"
-fi
-echo ""
 
-# Queue counts
-INBOX_COUNT=$(find "$REEDER_DIR/inbox" -name "*.json" 2>/dev/null | wc -l)
-PROCESSING_COUNT=$(find "$REEDER_DIR/processing" -name "*.json" 2>/dev/null | wc -l)
-DONE_COUNT=$(find "$REEDER_DIR/done" -name "*.json" ! -name "FAILED-*" 2>/dev/null | wc -l)
-FAILED_COUNT=$(find "$REEDER_DIR/done" -name "FAILED-*.json" 2>/dev/null | wc -l)
+def systemd_active(unit: str) -> str:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() or "unknown"
+    except OSError:
+        return "unknown"
 
-echo "Queue:"
-echo "  Inbox:      $INBOX_COUNT"
-echo "  Processing: $PROCESSING_COUNT"
-echo "  Completed:  $DONE_COUNT"
-echo "  Failed:     $FAILED_COUNT"
-echo ""
 
-# Show inbox contents
-if [[ $INBOX_COUNT -gt 0 ]]; then
-    echo "Pending jobs:"
-    for job in "$REEDER_DIR/inbox"/*.json; do
-        if [[ -f "$job" ]]; then
-            title=$(python3 -c "import json; print(json.load(open('$job')).get('title', json.load(open('$job')).get('url', 'Untitled'))[:60])" 2>/dev/null || basename "$job")
-            echo "  - $(basename "$job"): $title"
-        fi
-    done
-    echo ""
-fi
+def show_push(config: dict) -> None:
+    root = base_dir(config)
+    paths = config.get("paths", {})
+    done = root / paths.get("done", "done")
+    status_file = root / paths.get("status_file", "var/status.txt")
+    inbox = root / paths.get("inbox", "inbox")
+    processing = root / paths.get("processing", "processing")
 
-# Show recent completions
-if [[ $DONE_COUNT -gt 0 ]]; then
-    echo "Recent completions (last 5):"
-    for job in $(ls -t "$REEDER_DIR/done"/*.json 2>/dev/null | grep -v "FAILED-" | head -5); do
-        if [[ -f "$job" ]]; then
-            title=$(python3 -c "import json; print(json.load(open('$job')).get('title', 'Untitled')[:50])" 2>/dev/null || basename "$job")
-            echo "  - $title"
-        fi
-    done
-    echo ""
-fi
+    print("=== Reeder Status (push) ===")
+    print()
+    if status_file.exists():
+        lines = status_file.read_text().strip().splitlines()
+        if lines:
+            print(f"Updated: {lines[0]}")
+            print(f"Current: {lines[-1]}")
+    else:
+        print("Current: Unknown (no status file)")
+    print()
 
-# Show failed jobs
-if [[ $FAILED_COUNT -gt 0 ]]; then
-    echo "Failed jobs:"
-    for job in "$REEDER_DIR/done"/FAILED-*.json; do
-        if [[ -f "$job" ]]; then
-            error=$(python3 -c "import json; print(json.load(open('$job')).get('_error', {}).get('message', 'Unknown error')[:60])" 2>/dev/null || echo "Unknown error")
-            echo "  - $(basename "$job"): $error"
-        fi
-    done
-    echo ""
-fi
+    inbox_count = len(list(inbox.glob("*.json")))
+    processing_count = len(list(processing.glob("*.json")))
+    done_files = list(done.glob("*.json"))
+    failed_count = len([p for p in done_files if p.name.startswith("FAILED-")])
+    completed = done_files
+    print("Queue:")
+    print(f"  Inbox:      {inbox_count}")
+    print(f"  Processing: {processing_count}")
+    print(f"  Completed:  {len(completed) - failed_count}")
+    print(f"  Failed:     {failed_count}")
+    print()
 
-# Systemd service status
-echo "Systemd:"
-systemctl is-active reeder.path &>/dev/null && echo "  reeder.path: active" || echo "  reeder.path: inactive"
-systemctl is-active reeder.service &>/dev/null && echo "  reeder.service: running" || echo "  reeder.service: idle"
+    if inbox_count:
+        print("Pending jobs:")
+        for job_path in inbox.glob("*.json"):
+            try:
+                job = json.loads(job_path.read_text())
+                title = job.get("title") or job.get("url") or "Untitled"
+            except Exception:
+                title = job_path.name
+            print(f"  - {job_path.name}: {str(title)[:60]}")
+        print()
+
+    recent = sorted(completed, key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+    if recent:
+        print("Recent completions (last 5):")
+        for job_path in recent:
+            if job_path.name.startswith("FAILED-"):
+                continue
+            try:
+                job = json.loads(job_path.read_text())
+                title = job.get("title") or "Untitled"
+            except Exception:
+                title = job_path.name
+            print(f"  - {str(title)[:50]}")
+        print()
+
+    failed = [p for p in completed if p.name.startswith("FAILED-")]
+    if failed:
+        print("Failed jobs:")
+        for job_path in failed:
+            try:
+                job = json.loads(job_path.read_text())
+                error = job.get("_error", {}).get("message", "Unknown error")
+            except Exception:
+                error = "Unknown error"
+            print(f"  - {job_path.name}: {str(error)[:60]}")
+        print()
+
+    print("Systemd:")
+    print(f"  reeder.path: {systemd_active('reeder.path')}")
+    print(f"  reeder.service: {systemd_active('reeder.service')}")
+
+
+def show_pull(config: dict) -> None:
+    url = f"{api_url(config)}/api/v1/status"
+    print("=== Reeder Status (pull) ===")
+    print()
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            status = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"API unavailable at {url}: {exc}")
+        show_pull_db(config)
+    else:
+        jobs = status.get("jobs", {})
+        tasks = status.get("tasks", {})
+        print("Jobs:")
+        for key in ("queued", "running", "completed", "failed", "canceled"):
+            if jobs.get(key):
+                print(f"  {key.capitalize():<11} {jobs[key]}")
+        print("Tasks:")
+        for key, value in sorted(tasks.items()):
+            print(f"  {key.capitalize():<11} {value}")
+        print()
+        print(f"Workers online: {len(status.get('online_workers', []))}")
+        for worker in status.get("online_workers", []):
+            caps = ", ".join(worker.get("capabilities", []))
+            print(f"  - {worker['name']} ({worker['id']}): {worker.get('state')} [{caps}]")
+        active = status.get("active_task")
+        if active:
+            print(f"Active task: {active['type']} {active['id']} ({active['status']})")
+            progress = (active.get("payload") or {}).get("progress")
+            if progress:
+                print(f"  Progress: {progress}")
+        print(f"Updated: {status.get('updated_at')}")
+        print()
+
+        try:
+            with urllib.request.urlopen(
+                f"{api_url(config)}/api/v1/jobs?limit=5", timeout=10
+            ) as response:
+                recent = json.loads(response.read()).get("jobs", [])
+        except (urllib.error.URLError, OSError, ValueError):
+            recent = []
+        if recent:
+            print("Recent jobs:")
+            for job in recent:
+                print(f"  - {job['status']:<9} {job['id']}: {job.get('title') or ''}")
+            print()
+
+    print("Systemd:")
+    print(f"  reeder-web: {systemd_active('reeder-web')}")
+    print(f"  reeder-orchestrator: {systemd_active('reeder-orchestrator')}")
+
+
+def show_pull_db(config: dict) -> None:
+    root = base_dir(config)
+    paths = config.get("paths", {})
+    db_path = root / paths.get("db", "var/reeder.db")
+    if not db_path.exists():
+        print(f"Database not found: {db_path}")
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        jobs = dict(
+            conn.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall()
+        )
+        tasks = dict(
+            conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall()
+        )
+        recent = conn.execute(
+            "SELECT status, id, title FROM jobs ORDER BY created_at DESC LIMIT 5"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error as exc:
+        print(f"Could not read database: {exc}")
+        return
+    print("Jobs:", jobs)
+    print("Tasks:", tasks)
+    if recent:
+        print("Recent jobs:")
+        for status, job_id, title in recent:
+            print(f"  - {status:<9} {job_id}: {title or ''}")
+
+
+def main() -> None:
+    config = load_config()
+    mode = config.get("jobs", {}).get("mode", "push")
+    if mode == "push":
+        show_push(config)
+    else:
+        show_pull(config)
+
+
+if __name__ == "__main__":
+    main()

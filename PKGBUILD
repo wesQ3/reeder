@@ -22,6 +22,7 @@ package() {
     install -Dm755 bin/submit-url "$pkgdir/usr/lib/reeder/bin/submit-url"
     install -Dm755 bin/submit-text "$pkgdir/usr/lib/reeder/bin/submit-text"
     install -Dm755 bin/reeder-status "$pkgdir/usr/lib/reeder/bin/reeder-status"
+    install -Dm644 bin/_submit_lib.py "$pkgdir/usr/lib/reeder/bin/_submit_lib.py"
 
     # Install Python project files
     install -Dm644 pyproject.toml "$pkgdir/usr/lib/reeder/pyproject.toml"

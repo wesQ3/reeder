@@ -1,68 +1,31 @@
-#!/bin/bash
-# Submit text directly to Reeder
-# Usage: submit-text <title> [text or - for stdin]
+#!/usr/bin/env python3
+"""Submit text directly to Reeder (push inbox or pull API)."""
 
-set -euo pipefail
-
-# Resolve inbox path from config
-get_inbox() {
-    local config="${REEDER_CONFIG:-}"
-    if [[ -z "$config" ]]; then
-        # Search standard locations
-        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        for candidate in "$script_dir/../config.toml" "/etc/reeder/config.toml" "$HOME/.config/reeder/config.toml"; do
-            if [[ -f "$candidate" ]]; then
-                config="$candidate"
-                break
-            fi
-        done
-    fi
-    
-    if [[ -z "$config" ]] || [[ ! -f "$config" ]]; then
-        echo "/var/lib/reeder/inbox"  # fallback
-        return
-    fi
-    
-    # Parse TOML with Python
-    python3 -c "
-import tomllib
+import sys
 from pathlib import Path
-with open('$config', 'rb') as f:
-    cfg = tomllib.load(f)
-base = Path(cfg['paths']['base_dir'])
-inbox = base / cfg['paths']['inbox']
-print(inbox)
-"
-}
 
-INBOX="${REEDER_INBOX:-$(get_inbox)}"
-TITLE="${1:-Untitled}"
-TEXT="${2:-}"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-if [[ "$TEXT" == "-" ]] || [[ -z "$TEXT" ]]; then
-    TEXT=$(cat)
-fi
+from _submit_lib import fail, submit
 
-if [[ -z "$TEXT" ]]; then
-    echo "Usage: $0 <title> <text>"
-    echo "       $0 <title> -  # read from stdin"
-    echo "       echo 'text' | $0 <title>"
-    exit 1
-fi
 
-TIMESTAMP=$(date +%s)
-SLUG=$(echo "$TITLE" | sed 's|[^a-zA-Z0-9]|-|g' | cut -c1-50)
-FILENAME="${TIMESTAMP}-${SLUG}.json"
+def main() -> None:
+    if len(sys.argv) < 2:
+        fail("Usage: submit-text <title> <text>\n       submit-text <title> -\n       echo 'text' | submit-text <title>")
+    title = sys.argv[1] or "Untitled"
+    if len(sys.argv) > 2 and sys.argv[2] != "-":
+        text = " ".join(sys.argv[2:])
+    else:
+        text = sys.stdin.read()
+    if not text.strip():
+        fail("Error: no text provided")
+    try:
+        result = submit({"type": "text", "title": title, "text": text})
+    except RuntimeError as exc:
+        fail(str(exc))
+    detail = result.get("detail_url")
+    print(f"Submitted: {result['id']}" + (f" ({detail})" if detail else ""))
 
-# Escape text for JSON
-TEXT_ESCAPED=$(echo "$TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
-cat > "${INBOX}/${FILENAME}" <<EOF
-{
-  "type": "text",
-  "title": "$TITLE",
-  "text": $TEXT_ESCAPED
-}
-EOF
-
-echo "Submitted: ${FILENAME}"
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,19 @@
-# Job File Format
+# Job Format
 
-Jobs are submitted as JSON files dropped into the `inbox/` directory. The filename should be unique (timestamp-based recommended).
+In **push** mode (`jobs.mode = "push"`), jobs are JSON files dropped into the
+`inbox/` directory. In **pull** mode, the same JSON object is submitted to
+`POST /api/v1/jobs`; job/task state then lives in SQLite instead of the inbox.
+
+The CLI helpers respect the configured mode:
+
+```bash
+submit-url https://example.com/article "Optional title"
+submit-text "Title" "Text to synthesize"
+echo "Piped text" | submit-text "Title"
+```
+
+Set `REEDER_API_URL` if the web service is not on
+`http://127.0.0.1:8081`.
 
 ## Naming Convention
 
@@ -11,6 +24,20 @@ Jobs are submitted as JSON files dropped into the `inbox/` directory. The filena
 Example: `1737654321-interesting-article.json`
 
 The timestamp ensures FIFO ordering. The slug is optional but helps identify jobs at a glance.
+
+## Fields added by the pull path
+
+The pull API accepts the same fields plus:
+
+| Field | Description |
+|-------|-------------|
+| `priority` | Higher values are claimed first |
+| `tts_profile` | Selects an engine/profile (`qwen3`, `kokoro`, ...) |
+| `language` | TTS language hint (`Auto` by default) |
+
+The orchestrator stores prepared `input.json` (chunks + token counts) and
+`text.txt` as task artifacts, so the exact extracted text and chunking are
+inspectable from the job detail page.
 
 ## Job Types
 
