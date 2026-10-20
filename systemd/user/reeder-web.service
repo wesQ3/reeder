@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/code/reeder/bin/reeder-web
+ExecStart=%h/code/reeder/.venv/bin/python %h/code/reeder/bin/reeder-web
 
 # Environment
 Environment="REEDER_CONFIG=%h/code/reeder/config.dev.toml"

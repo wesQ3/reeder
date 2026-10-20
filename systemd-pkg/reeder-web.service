@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=reeder
 Group=reeder
-ExecStart=/usr/lib/reeder/bin/reeder-web --config /etc/reeder/config.toml
+ExecStart=/var/lib/reeder/.venv/bin/python /usr/lib/reeder/bin/reeder-web --config /etc/reeder/config.toml
 WorkingDirectory=/var/lib/reeder
 Environment=HOME=/var/lib/reeder
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
@@ -14,6 +14,7 @@ Environment=UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv
 Environment=UV_CACHE_DIR=/var/lib/reeder/.cache/uv
 Environment=HF_HOME=/var/lib/reeder/.cache/huggingface
 Environment=REEDER_WEB_HOST=0.0.0.0
+Environment=PYTHONUNBUFFERED=1
 # Shared worker token for /api/v1/*.
 EnvironmentFile=-/etc/reeder/worker.env
 Restart=on-failure

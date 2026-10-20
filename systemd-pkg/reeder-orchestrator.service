@@ -9,8 +9,9 @@ Type=simple
 User=reeder
 Group=reeder
 WorkingDirectory=/var/lib/reeder
-ExecStart=/usr/lib/reeder/bin/reeder-orchestrator --config /etc/reeder/config.toml
+ExecStart=/var/lib/reeder/.venv/bin/python /usr/lib/reeder/bin/reeder-orchestrator --config /etc/reeder/config.toml
 Environment=HOME=/var/lib/reeder
+Environment=PYTHONUNBUFFERED=1
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=UV_PROJECT_ENVIRONMENT=/var/lib/reeder/.venv
 Environment=UV_CACHE_DIR=/var/lib/reeder/.cache/uv
